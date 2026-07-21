@@ -1,0 +1,54 @@
+diff --git a/src/livox_ros_driver2/src/call_back/lidar_common_callback.cpp b/src/livox_ros_driver2/src/call_back/lidar_common_callback.cpp
+--- a/src/livox_ros_driver2/src/call_back/lidar_common_callback.cpp
++++ b/src/livox_ros_driver2/src/call_back/lidar_common_callback.cpp
+@@ -71,13 +71,7 @@ void LidarCommonCallback::LidarImuDataCallback(ImuData* imu_data, void *client_
+   }
+ 
+   LdsLidar *lds_lidar = static_cast<LdsLidar *>(client_data);
+-  (void)lds_lidar;
+-  static std::atomic<uint32_t> imu_counter{0};
+-  const uint32_t count = imu_counter.fetch_add(1) + 1;
+-  if (count <= 10 || count % 500 == 0) {
+-    fprintf(stderr, "[codex][imu] bypass count=%u handle=%u\n", count, imu_data->handle);
+-  }
+-  return;
++  lds_lidar->StorageImuData(imu_data);
+ }
+ 
+ } // namespace livox_ros
+diff --git a/src/livox_ros_driver2/src/comm/pub_handler.cpp b/src/livox_ros_driver2/src/comm/pub_handler.cpp
+--- a/src/livox_ros_driver2/src/comm/pub_handler.cpp
++++ b/src/livox_ros_driver2/src/comm/pub_handler.cpp
+@@ -142,12 +142,12 @@ void PubHandler::OnLivoxLidarPointCloudCallback(uint32_t handle, const uint8_t d
+   packet.point_interval = data->time_interval * 100 / data->dot_num;  //ns
+   packet.time_stamp = GetEthPacketTimestamp(data->time_type,
+                                             data->timestamp, sizeof(data->timestamp));
+   uint32_t length = data->length - sizeof(LivoxLidarEthernetPacket) + 1;
+-  static std::atomic<uint32_t> raw_cb_counter{0};
+-  const uint32_t raw_count = raw_cb_counter.fetch_add(1) + 1;
+-  if (raw_count <= 10 || raw_count % 200 == 0) {
+-    fprintf(stderr, "[codex][rawcb] drop count=%u dot_num=%u data_type=%u data_len=%u payload_len=%u\n",
+-            raw_count, data->dot_num, data->data_type, data->length, length);
++  packet.raw_data.insert(packet.raw_data.end(), data->data, data->data + length);
++  {
++    std::unique_lock<std::mutex> lock(self->packet_mutex_);
++    self->raw_packet_queue_.push_back(packet);
+   }
++  self->packet_condition_.notify_one();
+   return;
+ }
+@@ -248,12 +248,7 @@ void PubHandler::RawDataProcess() {
+     if (lidar_extrinsics_.find(id) != lidar_extrinsics_.end()) {
+         lidar_process_handlers_[id]->SetLidarsExtParam(lidar_extrinsics_[id]);
+     }
+-    static std::atomic<uint32_t> proc_bypass_counter{0};
+-    const uint32_t proc_count = proc_bypass_counter.fetch_add(1) + 1;
+-    if (proc_count <= 10 || proc_count % 500 == 0) {
+-      fprintf(stderr, "[codex][proc] bypass count=%u id=%u raw_bytes=%zu point_num=%u\n",
+-              proc_count, id, raw_data.raw_data.size(), raw_data.point_num);
+-    }
+-    continue;
++    process_handler->PointCloudProcess(raw_data);
++    CheckTimer(id);
+   }
+ }

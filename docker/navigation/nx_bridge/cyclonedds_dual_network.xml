@@ -1,0 +1,17 @@
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="eth1" priority="default" multicast="default" />
+        <NetworkInterface name="wlan0" priority="default" multicast="default" />
+      </Interfaces>
+      <AllowMulticast>spdp</AllowMulticast>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer address="192.168.123.161" />
+        <Peer address="192.168.1.196" />
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
