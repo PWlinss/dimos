@@ -105,6 +105,7 @@ source /opt/ros/humble/setup.bash
 set -u
 export DIMOS_NX_LIDAR_TOPIC=/dimos/registered_scan
 export DIMOS_NX_ODOM_TOPIC=/dimos/odom
+export DIMOS_NX_WORLD_FRAME_ID="${DIMOS_NX_WORLD_FRAME_ID:-odom}"
 export DIMOS_NX_COLOR_IMAGE_TOPIC=/dimos/color_image
 export DIMOS_NX_CMD_VEL_TOPIC=/dimos/cmd_vel
 export DIMOS_NX_MAP_TOPIC="${DIMOS_NX_MAP_TOPIC:-/dimos/map}"

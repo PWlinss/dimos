@@ -63,6 +63,20 @@ def test_nx_bridge_old_stack_topic_contract() -> None:
     assert ("global_map", PointCloud2) not in transport_map
 
 
+def test_nx_bridge_passes_configured_world_frame_to_mapping_modules(monkeypatch) -> None:
+    module = import_module("dimos.robot.unitree.go2.blueprints.navigation.unitree_go2_nx_bridge")
+    monkeypatch.setenv("DIMOS_NX_WORLD_FRAME_ID", "map")
+    module = reload(module)
+
+    try:
+        atoms = {atom.module: atom for atom in module.unitree_go2_nx_bridge.blueprints}
+        assert atoms[OdomPointCloudTransformer].kwargs["world_frame_id"] == "map"
+        assert atoms[VoxelGridMapper].kwargs["frame_id"] == "map"
+    finally:
+        monkeypatch.delenv("DIMOS_NX_WORLD_FRAME_ID", raising=False)
+        reload(module)
+
+
 def test_nx_map_bridge_consumes_static_map_as_global_costmap(monkeypatch) -> None:
     monkeypatch.setenv("DIMOS_NX_MAP_TOPIC", "/dimos/map")
     monkeypatch.setenv("DIMOS_NX_ODOM_TOPIC", "/dimos/odom")
@@ -456,12 +470,14 @@ def test_nx_adapter_assets_exist() -> None:
         root / "docker/navigation/nx_bridge/sport_state_to_pose.py",
         root / "docker/navigation/nx_bridge/cyclonedds_dual_network.xml",
         root / "docker/navigation/nx_bridge/cyclonedds_robot_bus.xml",
+        root / "docker/navigation/nx_bridge/cyclonedds_pusai_wifi.xml",
         root / "docker/navigation/nx_bridge/sport_state_to_udp.py",
         root / "docker/navigation/nx_bridge/udp_to_pose.py",
         root / "docker/navigation/nx_bridge/topic_relay.py",
         root / "docker/navigation/nx_bridge/cmd_vel_relay.py",
         root / "docker/navigation/nx_bridge/guarded_cmd_to_udp.py",
         root / "docker/navigation/nx_bridge/udp_to_sport_request.py",
+        root / "docker/navigation/nx_bridge/pointcloud_tcp_bridge.py",
         root / "docker/navigation/nx_bridge/start_nx_bridge.sh",
         root / "docker/navigation/nx_bridge/restore_livox_callbacks.patch",
         root / "scripts/start_pusai_nx_bridge.sh",
@@ -483,7 +499,13 @@ def test_pusai_start_script_prefers_the_bridge_worktree_for_workers() -> None:
     assert 'export CYCLONEDDS_URI="${PUSAI_DDS_URI}"' in script
     assert 'verify_pusai_nx_data.py' in script
     assert 'NetworkInterface name="wlx702ad7b0a20b"' in dds_config
-    assert '<Peer address="192.168.1.105" />' in dds_config
+    assert '<Peer address="10.42.0.238" />' in dds_config
+
+
+def test_pusai_start_script_uses_odom_for_pretransformed_builtin_lidar() -> None:
+    script = (DIMOS_PROJECT_ROOT / "scripts/start_pusai_nx_bridge.sh").read_text()
+
+    assert 'DIMOS_NX_WORLD_FRAME_ID="${DIMOS_NX_WORLD_FRAME_ID:-odom}"' in script
 
 
 def test_pusai_start_script_uses_a_longer_pointcloud_probe_window() -> None:
@@ -638,6 +660,8 @@ def test_nx_cmd_vel_relay_is_disabled_and_isolated_by_default() -> None:
     assert 'declare_parameter("max_angular_z", 1.2)' in relay_source
     assert 'declare_parameter("command_timeout_sec", 0.5)' in relay_source
     assert "add_on_set_parameters_callback" in relay_source
+    assert "if not isinstance(initial_enabled, bool):" in relay_source
+    assert 'reason="enabled must be a boolean"' in relay_source
     assert "_publish_zero" in relay_source
     assert '"/cmd_vel"' not in relay_source
 
@@ -658,7 +682,11 @@ def test_nx_control_udp_adapter_keeps_wlan_and_robot_bus_separate() -> None:
 def test_nx_cyclonedds_configs_use_any_domain_id() -> None:
     root = DIMOS_PROJECT_ROOT / "docker/navigation/nx_bridge"
 
-    for name in ("cyclonedds_robot_bus.xml", "cyclonedds_dual_network.xml"):
+    for name in (
+        "cyclonedds_robot_bus.xml",
+        "cyclonedds_dual_network.xml",
+        "cyclonedds_pusai_wifi.xml",
+    ):
         config = (root / name).read_text()
         assert '<Domain Id="any">' in config
 
@@ -690,6 +718,8 @@ def test_nx_sport_gateway_is_disabled_and_never_sends_stand_commands() -> None:
     assert 'create_publisher(Request, "/api/sport/request", 10)' in gateway_source
     assert "MOVE_API_ID = 1008" in gateway_source
     assert "STOP_MOVE_API_ID = 1003" in gateway_source
+    assert "if not isinstance(initial_enabled, bool):" in gateway_source
+    assert 'reason="enabled must be a boolean"' in gateway_source
     assert "_publish_stop" in gateway_source
     assert "if self._enabled:" in gateway_source
     assert "def destroy_node" in gateway_source
@@ -735,6 +765,7 @@ def test_nx_start_script_keeps_motion_nodes_opt_in_and_disabled() -> None:
     assert "start_process" in script
     assert "set +u" in script
     assert "set -u" in script
+    assert 'WIFI_DDS_URI="${DIMOS_NX_WIFI_DDS_URI:-file://${SCRIPT_DIR}/cyclonedds_pusai_wifi.xml}"' in script
     assert 'ROBOT_DDS_URI="${DIMOS_NX_ROBOT_DDS_URI:-file://${SCRIPT_DIR}/cyclonedds_robot_bus.xml}"' in script
     assert "is_live_pid" in script
     assert '"Z"' in script
@@ -912,6 +943,17 @@ def test_nx_dual_network_dds_asset_separates_robot_and_pusai_peers() -> None:
     assert '<NetworkInterface ip="' not in dds_source
     assert '<Peer address="192.168.123.161" />' in dds_source
     assert '<Peer address="192.168.1.196" />' in dds_source
+
+
+def test_nx_pusai_wifi_dds_asset_binds_wlan0_to_pusai() -> None:
+    dds_source = (
+        DIMOS_PROJECT_ROOT / "docker/navigation/nx_bridge/cyclonedds_pusai_wifi.xml"
+    ).read_text()
+
+    assert 'NetworkInterface name="wlan0"' in dds_source
+    assert '<Peer address="10.42.0.1" />' in dds_source
+    assert '<AllowMulticast>spdp</AllowMulticast>' in dds_source
+    assert '<NetworkInterface ip="' not in dds_source
 
 
 def test_nx_robot_bus_dds_asset_targets_only_the_go2_controller() -> None:

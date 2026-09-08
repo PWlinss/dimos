@@ -44,7 +44,10 @@ class UdpToSportRequest(Node):
         self.declare_parameter("command_timeout_sec", 0.5)
         self.declare_parameter("stats_interval_sec", 2.0)
 
-        self._enabled = self.get_parameter("enabled").value
+        initial_enabled = self.get_parameter("enabled").value
+        if not isinstance(initial_enabled, bool):
+            raise TypeError("enabled must be a boolean")
+        self._enabled = initial_enabled
         self._max_linear_x = self.get_parameter("max_linear_x").value
         self._max_linear_y = self.get_parameter("max_linear_y").value
         self._max_angular_z = self.get_parameter("max_angular_z").value
@@ -78,6 +81,14 @@ class UdpToSportRequest(Node):
             return SetParametersResult(
                 successful=False,
                 reason="udp_host and udp_port require a gateway restart",
+            )
+        if any(
+            parameter.name == "enabled" and not isinstance(parameter.value, bool)
+            for parameter in parameters
+        ):
+            return SetParametersResult(
+                successful=False,
+                reason="enabled must be a boolean",
             )
 
         was_enabled = self._enabled

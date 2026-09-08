@@ -92,6 +92,28 @@ def test_transformer_drops_lidar_until_an_odom_sample_is_available(
     assert transformer._transform(_cloud((1.0, 0.0, 0.0))) is None
 
 
+def test_transformer_bypasses_stable_frame_without_odom(
+    transformer: OdomPointCloudTransformer,
+) -> None:
+    scan = PointCloud2.from_numpy(
+        np.asarray([[1.0, 2.0, 3.0]], dtype=np.float32), frame_id="world"
+    )
+
+    assert transformer._transform(scan) is scan
+
+
+def test_transformer_bypasses_configured_odom_frame_without_odom() -> None:
+    transformer = OdomPointCloudTransformer(world_frame_id="odom")
+    scan = PointCloud2.from_numpy(
+        np.asarray([[1.0, 2.0, 3.0]], dtype=np.float32), frame_id="odom"
+    )
+
+    try:
+        assert transformer._transform(scan) is scan
+    finally:
+        transformer.stop()
+
+
 def test_transformer_publishes_raw_and_world_frame_lidar(
     transformer: OdomPointCloudTransformer,
 ) -> None:

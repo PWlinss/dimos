@@ -33,7 +33,10 @@ class CmdVelRelay(Node):
 
         self._input_topic = self.get_parameter("input_topic").value
         self._output_topic = self.get_parameter("output_topic").value
-        self._enabled = self.get_parameter("enabled").value
+        initial_enabled = self.get_parameter("enabled").value
+        if not isinstance(initial_enabled, bool):
+            raise TypeError("enabled must be a boolean")
+        self._enabled = initial_enabled
         self._max_linear_x = self.get_parameter("max_linear_x").value
         self._max_linear_y = self.get_parameter("max_linear_y").value
         self._max_angular_z = self.get_parameter("max_angular_z").value
@@ -64,6 +67,14 @@ class CmdVelRelay(Node):
             return SetParametersResult(
                 successful=False,
                 reason="input_topic and output_topic require a relay restart",
+            )
+        if any(
+            parameter.name == "enabled" and not isinstance(parameter.value, bool)
+            for parameter in parameters
+        ):
+            return SetParametersResult(
+                successful=False,
+                reason="enabled must be a boolean",
             )
 
         was_enabled = self._enabled

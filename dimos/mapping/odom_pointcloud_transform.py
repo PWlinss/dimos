@@ -71,6 +71,8 @@ class OdomPointCloudTransformer(Module):
 
     def _transform(self, scan: PointCloud2) -> PointCloud2 | None:
         """Return a scan in world coordinates, or wait until odometry is available."""
+        if scan.frame_id == self.config.world_frame_id:
+            return scan
         if self._latest_odom is None:
             return None
 

@@ -61,6 +61,7 @@ def _topic(name: str, default: str) -> str:
 
 _lidar_topic = _topic("DIMOS_NX_LIDAR_TOPIC", "/registered_scan")
 _odom_topic = _topic("DIMOS_NX_ODOM_TOPIC", "/odom")
+_world_frame_id = os.getenv("DIMOS_NX_WORLD_FRAME_ID", "world")
 _color_image_topic = _topic("DIMOS_NX_COLOR_IMAGE_TOPIC", "/color_image")
 _cmd_vel_topic = _topic("DIMOS_NX_CMD_VEL_TOPIC", "/cmd_vel")
 _map_topic = _topic("DIMOS_NX_MAP_TOPIC", "/dimos/map")
@@ -503,10 +504,12 @@ unitree_go2_nx_bridge = (
         websocket_vis(),
         CameraImageRelay.blueprint(),
         odom_pointcloud_transformer(
+            world_frame_id=_world_frame_id,
             lidar_translation=_lidar_translation,
             lidar_rotation=_lidar_rotation,
         ),
         voxel_mapper(
+            frame_id=_world_frame_id,
             voxel_size=float(os.getenv("DIMOS_NX_VOXEL_SIZE", "0.1")),
             device=os.getenv("DIMOS_NX_VOXEL_DEVICE", "CPU:0"),
         ),
