@@ -120,6 +120,50 @@ class TestBridgeSpawnLogic:
         )
 
 
+def test_rerun_rate_limits_can_be_split_by_payload_type(monkeypatch) -> None:
+    """Image and point-cloud logging use independent intervals."""
+    import rerun as rr
+
+    from dimos.msgs.sensor_msgs import Image, PointCloud2
+    from dimos.visualization.rerun import bridge as bridge_module
+
+    bridge = object.__new__(bridge_module.RerunBridgeModule)
+    bridge.config = bridge_module.Config(
+        pubsubs=[],
+        min_interval_sec=5.0,
+        image_min_interval_sec=0.2,
+        pointcloud_min_interval_sec=5.0,
+    )
+    bridge._last_log = {}
+    bridge._visual_override_for_entity_path = lambda _path: lambda _msg: object()
+
+    logged: list[tuple[object, ...]] = []
+    clock = iter((10.0, 10.1, 10.21, 10.3, 14.9, 15.31))
+    monkeypatch.setattr(bridge_module.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(rr, "log", lambda *args, **_kwargs: logged.append(args))
+
+    image = Image()
+    pointcloud = PointCloud2()
+    bridge._on_message(image, "camera")
+    bridge._on_message(image, "camera")
+    bridge._on_message(image, "camera")
+    bridge._on_message(pointcloud, "lidar")
+    bridge._on_message(pointcloud, "lidar")
+    bridge._on_message(pointcloud, "lidar")
+
+    assert len(logged) == 4
+
+
+def test_rerun_legacy_interval_remains_the_fallback() -> None:
+    from dimos.visualization.rerun.bridge import Config
+
+    config = Config(pubsubs=[], min_interval_sec=3.0)
+
+    assert config.min_interval_sec == 3.0
+    assert config.image_min_interval_sec is None
+    assert config.pointcloud_min_interval_sec is None
+
+
 def _parse_version(version_str: str) -> tuple[int, int]:
     """Extract (major, minor) from a version string like '0.29.2' or '0.30.0a2'."""
     match = re.match(r"(\d+)\.(\d+)", version_str)

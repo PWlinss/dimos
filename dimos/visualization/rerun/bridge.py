@@ -178,7 +178,8 @@ class Config(ModuleConfig):
     # Static items logged once after start. Maps entity_path -> callable(rr) returning Archetype
     static: dict[str, Callable[[Any], Archetype]] = field(default_factory=dict)
 
-    min_interval_sec: float = 0.1  # Rate-limit per entity path (default: 10 Hz max)
+    # Rate-limit heavy messages per entity path (default: 10 Hz max).
+    min_interval_sec: float = 0.1
     entity_prefix: str = "world"
     topic_to_entity: Callable[[Any], str] | None = None
     viewer_mode: ViewerMode = field(default_factory=_resolve_viewer_mode)
@@ -188,6 +189,11 @@ class Config(ModuleConfig):
     # Blueprint factory: callable(rrb) -> Blueprint for viewer layout configuration
     # Set to None to disable default blueprint
     blueprint: BlueprintFactory | None = _default_blueprint
+
+    # Type-specific values override min_interval_sec when provided.  These
+    # fields stay at the end to preserve the legacy positional field order.
+    image_min_interval_sec: float | None = None
+    pointcloud_min_interval_sec: float | None = None
 
 
 class RerunBridgeModule(Module):
@@ -266,10 +272,21 @@ class RerunBridgeModule(Module):
         # High-bandwidth streams (e.g. 30fps camera, lidar) would otherwise
         # flood the viewer faster than it can evict, causing OOM.  Light
         # messages (Path, PointStamped, TF, etc.) pass through unthrottled.
-        if self.config.min_interval_sec > 0 and isinstance(msg, _HEAVY_MSG_TYPES):
+        if isinstance(msg, Image):
+            min_interval_sec = self.config.image_min_interval_sec
+        elif isinstance(msg, PointCloud2):
+            min_interval_sec = self.config.pointcloud_min_interval_sec
+        else:
+            min_interval_sec = None
+
+        if min_interval_sec is None and isinstance(msg, _HEAVY_MSG_TYPES):
+            # Keep min_interval_sec as the fallback for existing callers.
+            min_interval_sec = self.config.min_interval_sec
+
+        if min_interval_sec is not None and min_interval_sec > 0:
             now = time.monotonic()
             last = self._last_log.get(entity_path, 0.0)
-            if now - last < self.config.min_interval_sec:
+            if now - last < min_interval_sec:
                 return
             self._last_log[entity_path] = now
 

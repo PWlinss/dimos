@@ -49,6 +49,9 @@ class GlobalConfig(BaseSettings):
     robot_rotation_diameter: float = 0.6
     planner_strategy: NavigationStrategy = "simple"
     planner_robot_speed: float | None = None
+    planner_min_linear_velocity: float | None = None
+    planner_min_angular_velocity: float | None = None
+    planner_max_angular_velocity: float | None = None
     mcp_port: int = 9990
     mcp_host: str = "0.0.0.0"
     dtop: bool = False

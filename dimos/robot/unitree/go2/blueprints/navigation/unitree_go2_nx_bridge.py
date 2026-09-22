@@ -104,6 +104,12 @@ _lidar_rotation = tuple(
 )
 _rerun_map_voxel_size = _float("DIMOS_NX_RERUN_MAP_VOXEL_SIZE", 0.4)
 _rerun_heavy_interval = _float("DIMOS_NX_RERUN_HEAVY_INTERVAL", 5.0)
+_rerun_image_interval = _float("DIMOS_NX_RERUN_IMAGE_INTERVAL", 0.2)
+_rerun_pointcloud_interval = _float(
+    "DIMOS_NX_RERUN_POINTCLOUD_INTERVAL", _rerun_heavy_interval
+)
+_planner_linear_speed = _float("DIMOS_NX_PLANNER_LINEAR_SPEED", 0.4)
+_planner_angular_speed = _float("DIMOS_NX_PLANNER_ANGULAR_SPEED", 0.55)
 _costmap_algo = os.getenv("DIMOS_NX_COSTMAP_ALGO", "general")
 
 
@@ -499,6 +505,8 @@ unitree_go2_nx_bridge = (
         rerun_bridge(
             viewer_mode=_resolve_viewer_mode(),
             min_interval_sec=_rerun_heavy_interval,
+            image_min_interval_sec=_rerun_image_interval,
+            pointcloud_min_interval_sec=_rerun_pointcloud_interval,
             **_rerun_config,
         ),
         websocket_vis(),
@@ -539,7 +547,14 @@ unitree_go2_nx_bridge = (
             ("cmd_vel", Twist): ROSTransport(_cmd_vel_topic, Twist),
         }
     )
-    .global_config(n_workers=6, robot_model="unitree_go2")
+    .global_config(
+        n_workers=6,
+        robot_model="unitree_go2",
+        planner_robot_speed=_planner_linear_speed,
+        planner_min_linear_velocity=_planner_linear_speed,
+        planner_min_angular_velocity=_planner_angular_speed,
+        planner_max_angular_velocity=_planner_angular_speed,
+    )
     .configurators(ClockSyncConfigurator())
 )
 
@@ -549,6 +564,8 @@ unitree_go2_nx_map_bridge = (
         rerun_bridge(
             viewer_mode=_resolve_viewer_mode(),
             min_interval_sec=_rerun_heavy_interval,
+            image_min_interval_sec=_rerun_image_interval,
+            pointcloud_min_interval_sec=_rerun_pointcloud_interval,
             **_rerun_config,
         ),
         websocket_vis(),
@@ -580,7 +597,14 @@ unitree_go2_nx_map_bridge = (
             ("cmd_vel", Twist): ROSTransport(_cmd_vel_topic, Twist),
         }
     )
-    .global_config(n_workers=5, robot_model="unitree_go2")
+    .global_config(
+        n_workers=5,
+        robot_model="unitree_go2",
+        planner_robot_speed=_planner_linear_speed,
+        planner_min_linear_velocity=_planner_linear_speed,
+        planner_min_angular_velocity=_planner_angular_speed,
+        planner_max_angular_velocity=_planner_angular_speed,
+    )
     .configurators(ClockSyncConfigurator())
 )
 

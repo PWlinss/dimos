@@ -30,6 +30,7 @@ from dimos.msgs.geometry_msgs import PoseStamped, Twist
 from dimos.msgs.nav_msgs import CostValues, OccupancyGrid
 from dimos.msgs.sensor_msgs import Image, PointCloud2
 from dimos.robot.test_all_blueprints_generation import _scan_for_blueprints
+from dimos.visualization.rerun.bridge import RerunBridgeModule
 
 
 def test_nx_bridge_blueprint_is_scannable_and_registered() -> None:
@@ -61,6 +62,25 @@ def test_nx_bridge_old_stack_topic_contract() -> None:
     assert transport_map[("cmd_vel", Twist)].topic.topic == "/cmd_vel"
     assert ("color_image", Image) not in transport_map
     assert ("global_map", PointCloud2) not in transport_map
+
+
+def test_nx_bridges_configure_go2_navigation_velocity(monkeypatch) -> None:
+    monkeypatch.setenv("DIMOS_NX_PLANNER_LINEAR_SPEED", "0.4")
+    monkeypatch.setenv("DIMOS_NX_PLANNER_ANGULAR_SPEED", "0.55")
+    module = import_module("dimos.robot.unitree.go2.blueprints.navigation.unitree_go2_nx_bridge")
+    module = reload(module)
+
+    try:
+        for blueprint in (module.unitree_go2_nx_bridge, module.unitree_go2_nx_map_bridge):
+            overrides = blueprint.global_config_overrides
+            assert overrides["planner_robot_speed"] == 0.4
+            assert overrides["planner_min_linear_velocity"] == 0.4
+            assert overrides["planner_min_angular_velocity"] == 0.55
+            assert overrides["planner_max_angular_velocity"] == 0.55
+    finally:
+        monkeypatch.delenv("DIMOS_NX_PLANNER_LINEAR_SPEED", raising=False)
+        monkeypatch.delenv("DIMOS_NX_PLANNER_ANGULAR_SPEED", raising=False)
+        reload(module)
 
 
 def test_nx_bridge_passes_configured_world_frame_to_mapping_modules(monkeypatch) -> None:
@@ -363,6 +383,29 @@ def test_nx_bridge_bounds_rerun_global_map_history() -> None:
     assert "DIMOS_NX_RERUN_MAP_VOXEL_SIZE" in source
     assert "grid.voxel_downsample" in source
     assert "DIMOS_NX_RERUN_HEAVY_INTERVAL" in source
+
+
+def test_nx_bridge_separates_rerun_image_and_pointcloud_intervals(monkeypatch) -> None:
+    module = import_module("dimos.robot.unitree.go2.blueprints.navigation.unitree_go2_nx_bridge")
+    monkeypatch.setenv("DIMOS_NX_RERUN_HEAVY_INTERVAL", "6.0")
+    monkeypatch.setenv("DIMOS_NX_RERUN_IMAGE_INTERVAL", "0.2")
+    monkeypatch.setenv("DIMOS_NX_RERUN_POINTCLOUD_INTERVAL", "5.0")
+    module = reload(module)
+
+    try:
+        rerun_atom = next(
+            atom
+            for atom in module.unitree_go2_nx_bridge.blueprints
+            if atom.module is RerunBridgeModule
+        )
+        assert rerun_atom.kwargs["min_interval_sec"] == 6.0
+        assert rerun_atom.kwargs["image_min_interval_sec"] == 0.2
+        assert rerun_atom.kwargs["pointcloud_min_interval_sec"] == 5.0
+    finally:
+        monkeypatch.delenv("DIMOS_NX_RERUN_HEAVY_INTERVAL", raising=False)
+        monkeypatch.delenv("DIMOS_NX_RERUN_IMAGE_INTERVAL", raising=False)
+        monkeypatch.delenv("DIMOS_NX_RERUN_POINTCLOUD_INTERVAL", raising=False)
+        reload(module)
 
 
 def test_nx_bridge_transforms_lidar_into_world_before_voxel_mapping() -> None:
@@ -854,7 +897,9 @@ def test_pusai_start_script_uses_isolated_topics_and_daemon_mode() -> None:
     assert "DIMOS_NX_LIDAR_TOPIC=/dimos/registered_scan" in script
     assert "DIMOS_NX_ODOM_TOPIC=/dimos/odom" in script
     assert "DIMOS_NX_CMD_VEL_TOPIC=/dimos/cmd_vel" in script
-    assert 'DIMOS_NX_COSTMAP_ALGO="${DIMOS_NX_COSTMAP_ALGO:-raycast}"' in script
+    assert 'DIMOS_NX_COSTMAP_ALGO="${DIMOS_NX_COSTMAP_ALGO:-height_cost}"' in script
+    assert 'DIMOS_NX_PLANNER_LINEAR_SPEED="${DIMOS_NX_PLANNER_LINEAR_SPEED:-0.4}"' in script
+    assert 'DIMOS_NX_PLANNER_ANGULAR_SPEED="${DIMOS_NX_PLANNER_ANGULAR_SPEED:-0.55}"' in script
     assert 'DIMOS_NX_COSTMAP_MARK_FREE_RADIUS="${DIMOS_NX_COSTMAP_MARK_FREE_RADIUS:-0.25}"' in script
     assert 'DIMOS_NX_VOXEL_SIZE="${DIMOS_NX_VOXEL_SIZE:-0.1}"' in script
     assert "unitree-go2-nx-bridge" in script
