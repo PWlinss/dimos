@@ -280,8 +280,13 @@ class GlobalPlanner(Resource):
 
         logger.info("Replanning.", attempt=self._replan_limiter.get_attempt())
 
-        assert current_odom is not None
-        assert current_goal is not None
+        if current_odom is None or current_goal is None:
+            logger.warning(
+                "Skipping replan due to missing planner state.",
+                has_odom=current_odom is not None,
+                has_goal=current_goal is not None,
+            )
+            return
 
         if current_goal.position.distance(current_odom.position) < self._replan_goal_tolerance:
             self.cancel_goal(arrived=True)
@@ -302,7 +307,9 @@ class GlobalPlanner(Resource):
             current_odom = self._current_odom
             current_goal = self._current_goal
 
-        assert current_goal is not None
+        if current_goal is None:
+            logger.warning("Ignoring plan request because goal was cleared before planning started.")
+            return
 
         if current_odom is None:
             logger.warning("Cannot handle goal request: missing odometry.")

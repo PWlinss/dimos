@@ -263,6 +263,9 @@ class RerunBridgeModule(Module):
 
     def _on_message(self, msg: Any, topic: Any) -> None:
         """Handle incoming message - log to rerun."""
+        if not getattr(self, "_enabled", True):
+            return
+
         import rerun as rr
 
         # convert a potentially complex topic object into an str rerun entity path
@@ -311,37 +314,46 @@ class RerunBridgeModule(Module):
         super().start()
 
         self._last_log: dict[str, float] = {}
+        self._enabled = True
         logger.info("Rerun bridge starting", viewer_mode=self.config.viewer_mode)
 
-        # Initialize and spawn Rerun viewer
-        rr.init("dimos")
+        try:
+            # Initialize and spawn Rerun viewer.
+            rr.init("dimos")
 
-        if self.config.viewer_mode == "native":
-            try:
-                import rerun_bindings
+            if self.config.viewer_mode == "native":
+                try:
+                    import rerun_bindings
 
-                rerun_bindings.spawn(
-                    port=RERUN_GRPC_PORT,
-                    executable_name="dimos-viewer",
-                    memory_limit=self.config.memory_limit,
-                )
-            except ImportError:
-                pass  # dimos-viewer not installed
-            except Exception:
-                logger.warning(
-                    "dimos-viewer found but failed to spawn, falling back to stock rerun",
-                    exc_info=True,
-                )
-            rr.spawn(connect=True, memory_limit=self.config.memory_limit)
-        elif self.config.viewer_mode == "web":
-            server_uri = rr.serve_grpc()
-            rr.serve_web_viewer(connect_to=server_uri, open_browser=False)
-        elif self.config.viewer_mode == "connect":
-            rr.connect_grpc(self.config.connect_url)
-        # "none" - just init, no viewer (connect externally)
+                    rerun_bindings.spawn(
+                        port=RERUN_GRPC_PORT,
+                        executable_name="dimos-viewer",
+                        memory_limit=self.config.memory_limit,
+                    )
+                except ImportError:
+                    pass  # dimos-viewer not installed
+                except Exception:
+                    logger.warning(
+                        "dimos-viewer found but failed to spawn, falling back to stock rerun",
+                        exc_info=True,
+                    )
+                rr.spawn(connect=True, memory_limit=self.config.memory_limit)
+            elif self.config.viewer_mode == "web":
+                server_uri = rr.serve_grpc()
+                rr.serve_web_viewer(connect_to=server_uri, open_browser=False)
+            elif self.config.viewer_mode == "connect":
+                rr.connect_grpc(self.config.connect_url)
+            # "none" - just init, no viewer (connect externally)
 
-        if self.config.blueprint:
-            rr.send_blueprint(self.config.blueprint())
+            if self.config.blueprint:
+                rr.send_blueprint(self.config.blueprint())
+        except Exception:
+            self._enabled = False
+            logger.warning(
+                "Rerun initialization failed; bridge will be disabled for this run",
+                exc_info=True,
+            )
+            return
 
         # Start pubsubs and subscribe to all messages
         for pubsub in self.config.pubsubs:

@@ -149,7 +149,7 @@ def _check_for_uncommitted_changes(file_path: Path) -> bool:
 
 def _get_all_python_files(root: Path) -> Generator[Path, None, None]:
     for path in root.rglob("*.py"):
-        rel_path = str(path.relative_to(root.parent))
+        rel_path = path.relative_to(root.parent).as_posix()
         if "__pycache__" in str(path) or rel_path in IGNORED_FILES:
             continue
         yield path

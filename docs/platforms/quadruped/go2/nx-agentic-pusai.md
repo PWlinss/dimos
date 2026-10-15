@@ -2,11 +2,13 @@
 
 This starts `unitree-go2-nx-agentic`, the camera decoder, and the Command Center at `http://localhost:7779`. Rerun is disabled. Startup sends no motion command; `DIMOS_NX_CMD_VEL_TOPIC` defaults to the isolated `/dimos/agentic_probe/cmd_vel` topic. Do not remap it to a physical controller topic.
 
+The imported `unitree-go2-agentic-mcp-streamvln` blueprint is an experimental legacy path, not this NX deployment. Its StreamVLN movement is disabled by default; do not enable or run that blueprint on the current Go2 without a separate safety-chain review.
+
 ## One-time setup on Pusai
 
 Use a clean DimOS checkout on Pusai with ROS Humble and the NX ROS camera dependencies installed. The launcher defaults to checkout-local `.venv`, but Pusai's ROS Humble `rclpy` needs Python 3.10; the repository `.venv` may be Python 3.12 and is not suitable. Copy `scripts/pusai_nx_agentic.env.example` to `~/.config/dimos/nx-agentic.env` and keep its `DIMOS_VENV` set to the prepared Python 3.10 environment. The sample uses Pusai's `/home/wkr/Workspaces/workspace_peiwei/projects/VLN/dimos/.venv_ros310`; set `DIMOS_EXTRA_PYTHONPATH` to prepared Python 3.10-compatible packages if that venv lacks agentic dependencies such as Chroma or ONNX Runtime. Do not use a bare `uv sync` that creates a Python 3.12 environment for this deployment.
 
-Set `DIMOS_CLIP_MODEL_PATH` to the ONNX file, not its containing directory. The sample points to Pusai's existing `data/models_clip/model.onnx`. The example contains only non-secret host configuration.
+Set `DIMOS_CLIP_MODEL_PATH` to the ONNX file, not its containing directory. Keep the CLIP processor files (`config.json`, `preprocessor_config.json`, and tokenizer assets) beside it; startup loads these assets locally without contacting Hugging Face. The sample points to Pusai's `data/models_clip/model.onnx`. The example contains only non-secret host configuration.
 
 Create the Qwen credentials file separately at `~/.config/dimos/qwen.env`, readable only by your account, with `QWEN_API_KEY=...` and optionally `QWEN_MODEL=...` and `QWEN_BASE_URL=...`. The launcher reads credentials only from this fixed path; do not put secrets in the example or the non-secret settings file.
 

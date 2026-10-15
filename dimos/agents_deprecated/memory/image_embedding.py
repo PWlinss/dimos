@@ -74,11 +74,15 @@ class ImageEmbeddingProvider:
 
             if self.model_name == "clip":
                 configured_path = os.getenv("DIMOS_CLIP_MODEL_PATH")
-                model_id = Path(configured_path).expanduser() if configured_path else get_data("models_clip") / "model.onnx"
+                model_dir = (
+                    Path(configured_path).expanduser().parent
+                    if configured_path
+                    else get_data("models_clip")
+                )
+                model_id = Path(configured_path).expanduser() if configured_path else model_dir / "model.onnx"
                 if not model_id.is_file():
                     raise FileNotFoundError(f"CLIP ONNX model not found: {model_id}")
                 self.model_path = str(model_id)  # type: ignore[assignment]  # Store for pickling
-                processor_id = "openai/clip-vit-base-patch32"
 
                 providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
                 if sys.platform == "darwin":
@@ -91,7 +95,11 @@ class ImageEmbeddingProvider:
                 self.model = ort.InferenceSession(str(model_id), providers=providers)
 
                 actual_providers = self.model.get_providers()  # type: ignore[attr-defined]
-                self.processor = CLIPProcessor.from_pretrained(processor_id)
+                # Keep startup independent of Hugging Face connectivity.
+                self.processor = CLIPProcessor.from_pretrained(
+                    str(model_dir),
+                    local_files_only=True,
+                )
                 logger.info(f"Loaded CLIP model: {model_id} with providers: {actual_providers}")
             elif self.model_name == "resnet":
                 model_id = "microsoft/resnet-50"  # type: ignore[assignment]

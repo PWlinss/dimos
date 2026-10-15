@@ -74,7 +74,7 @@ class McpClient(Module[McpClientConfig]):
             daemon=True,
         )
         self._stop_event = Event()
-        self._http_client = httpx.Client(timeout=120.0)
+        self._http_client = httpx.Client(timeout=120.0, trust_env=False)
         self._seq_ids = SequentialIds()
 
     def __reduce__(self) -> Any:
