@@ -82,6 +82,13 @@ class RobotLocation:
             "description": self.name,  # Makes it searchable by text
         }
 
+        # Preserve custom metadata such as the coordinate frame without
+        # allowing it to overwrite the canonical location fields above.
+        reserved_keys = set(metadata) | {"frame_id"}
+        metadata.update(
+            {key: value for key, value in self.metadata.items() if key not in reserved_keys}
+        )
+
         # Only add frame_id if it's not None
         if self.frame_id is not None:
             metadata["frame_id"] = self.frame_id

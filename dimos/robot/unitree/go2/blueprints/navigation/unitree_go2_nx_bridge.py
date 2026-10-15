@@ -500,63 +500,70 @@ _rerun_config: dict[str, Any] = {
 }
 
 
-unitree_go2_nx_bridge = (
-    autoconnect(
-        rerun_bridge(
-            viewer_mode=_resolve_viewer_mode(),
-            min_interval_sec=_rerun_heavy_interval,
-            image_min_interval_sec=_rerun_image_interval,
-            pointcloud_min_interval_sec=_rerun_pointcloud_interval,
-            **_rerun_config,
-        ),
-        websocket_vis(),
-        CameraImageRelay.blueprint(),
-        odom_pointcloud_transformer(
-            world_frame_id=_world_frame_id,
-            lidar_translation=_lidar_translation,
-            lidar_rotation=_lidar_rotation,
-        ),
-        voxel_mapper(
-            frame_id=_world_frame_id,
-            voxel_size=float(os.getenv("DIMOS_NX_VOXEL_SIZE", "0.1")),
-            device=os.getenv("DIMOS_NX_VOXEL_DEVICE", "CPU:0"),
-        ),
-        cost_mapper(algo=_costmap_algo, config=_costmap_config(_costmap_algo)),
-        replanning_a_star_planner(),
-        wavefront_frontier_explorer(),
-    )
-    .remappings(
-        [
-            (OdomPointCloudTransformer, "lidar", "raw_lidar"),
-            (OdomPointCloudTransformer, "raw_lidar", "raw_lidar_visual"),
-            (OdomPointCloudTransformer, "world_lidar", "lidar"),
-            (OdomPointCloudTransformer, "robot_pose", "robot/base_link"),
-            (VoxelGridMapper, "lidar", "lidar"),
-            (CameraImageRelay, "ros_color_image", "ros_color_image"),
-        ]
-    )
-    .transports(
-        {
-            ("raw_lidar", PointCloud2): ROSTransport(
-                _lidar_topic, PointCloud2, queue_depth=5, reliability="best_effort"
+def make_unitree_go2_nx_bridge(world_frame_id: str):  # type: ignore[no-untyped-def]
+    """Build the NX bridge with one explicit world-coordinate contract."""
+
+    return (
+        autoconnect(
+            rerun_bridge(
+                viewer_mode=_resolve_viewer_mode(),
+                min_interval_sec=_rerun_heavy_interval,
+                image_min_interval_sec=_rerun_image_interval,
+                pointcloud_min_interval_sec=_rerun_pointcloud_interval,
+                **_rerun_config,
             ),
-            ("odom", PoseStamped): ROSTransport(_odom_topic, PoseStamped),
-            ("ros_color_image", Image): ROSTransport(
-                _color_image_topic, Image, queue_depth=2, reliability="best_effort"
+            websocket_vis(),
+            CameraImageRelay.blueprint(),
+            odom_pointcloud_transformer(
+                world_frame_id=world_frame_id,
+                lidar_translation=_lidar_translation,
+                lidar_rotation=_lidar_rotation,
             ),
-            ("cmd_vel", Twist): ROSTransport(_cmd_vel_topic, Twist),
-        }
+            voxel_mapper(
+                frame_id=world_frame_id,
+                voxel_size=float(os.getenv("DIMOS_NX_VOXEL_SIZE", "0.1")),
+                device=os.getenv("DIMOS_NX_VOXEL_DEVICE", "CPU:0"),
+            ),
+            cost_mapper(algo=_costmap_algo, config=_costmap_config(_costmap_algo)),
+            replanning_a_star_planner(),
+            wavefront_frontier_explorer(),
+        )
+        .remappings(
+            [
+                (OdomPointCloudTransformer, "lidar", "raw_lidar"),
+                (OdomPointCloudTransformer, "raw_lidar", "raw_lidar_visual"),
+                (OdomPointCloudTransformer, "world_lidar", "lidar"),
+                (OdomPointCloudTransformer, "robot_pose", "robot/base_link"),
+                (VoxelGridMapper, "lidar", "lidar"),
+                (CameraImageRelay, "ros_color_image", "ros_color_image"),
+            ]
+        )
+        .transports(
+            {
+                ("raw_lidar", PointCloud2): ROSTransport(
+                    _lidar_topic, PointCloud2, queue_depth=5, reliability="best_effort"
+                ),
+                ("odom", PoseStamped): ROSTransport(_odom_topic, PoseStamped),
+                ("ros_color_image", Image): ROSTransport(
+                    _color_image_topic, Image, queue_depth=2, reliability="best_effort"
+                ),
+                ("cmd_vel", Twist): ROSTransport(_cmd_vel_topic, Twist),
+            }
+        )
+        .global_config(
+            n_workers=6,
+            robot_model="unitree_go2",
+            planner_robot_speed=_planner_linear_speed,
+            planner_min_linear_velocity=_planner_linear_speed,
+            planner_min_angular_velocity=_planner_angular_speed,
+            planner_max_angular_velocity=_planner_angular_speed,
+        )
+        .configurators(ClockSyncConfigurator())
     )
-    .global_config(
-        n_workers=6,
-        robot_model="unitree_go2",
-        planner_robot_speed=_planner_linear_speed,
-        planner_min_linear_velocity=_planner_linear_speed,
-        planner_min_angular_velocity=_planner_angular_speed,
-        planner_max_angular_velocity=_planner_angular_speed,
-    )
-    .configurators(ClockSyncConfigurator())
-)
+
+
+# Keep a trailing Blueprint method so the static CLI registry discovers this variable.
+unitree_go2_nx_bridge = make_unitree_go2_nx_bridge(_world_frame_id).configurators()
 
 
 unitree_go2_nx_map_bridge = (
@@ -609,4 +616,8 @@ unitree_go2_nx_map_bridge = (
 )
 
 
-__all__ = ["unitree_go2_nx_bridge", "unitree_go2_nx_map_bridge"]
+__all__ = [
+    "make_unitree_go2_nx_bridge",
+    "unitree_go2_nx_bridge",
+    "unitree_go2_nx_map_bridge",
+]

@@ -17,7 +17,9 @@ Spatial Memory module for creating a semantic map of the environment.
 """
 
 from datetime import datetime
+import base64
 import os
+from threading import RLock
 import time
 from typing import TYPE_CHECKING, Any, Optional
 import uuid
@@ -85,6 +87,11 @@ class SpatialMemory(Module):
         visual_memory: Optional[
             "VisualMemory"
         ] = None,  # Optional VisualMemory instance for storing images
+        world_frame_id: str = "world",
+        base_frame_id: str = "base_link",
+        transform_tolerance_sec: float = 0.2,
+        min_rotation_threshold: float = 0.0,
+        similarity_threshold: float | None = None,
     ) -> None:
         """
         Initialize the spatial perception system.
@@ -98,12 +105,20 @@ class SpatialMemory(Module):
             chroma_client: Optional ChromaDB client for persistent storage
             visual_memory: Optional VisualMemory instance for storing images
             output_dir: Directory for storing visual memory data if visual_memory is not provided
+            world_frame_id: Frame in which the stored poses are expressed
+            base_frame_id: Robot base frame to query from TF
+            transform_tolerance_sec: Maximum allowed timestamp distance for TF lookup
         """
         self.collection_name = collection_name
         self.embedding_model = embedding_model
         self.embedding_dimensions = embedding_dimensions
         self.min_distance_threshold = min_distance_threshold
         self.min_time_threshold = min_time_threshold
+        self.world_frame_id = world_frame_id
+        self.base_frame_id = base_frame_id
+        self.transform_tolerance_sec = transform_tolerance_sec
+        self.min_rotation_threshold = min_rotation_threshold
+        self.similarity_threshold = similarity_threshold
 
         # Set up paths for persistence
         # Call parent Module init
@@ -173,6 +188,9 @@ class SpatialMemory(Module):
 
         self.last_position: Vector3 | None = None
         self.last_record_time: float | None = None
+        self._last_processed_image_ts: float | None = None
+        self._last_rotation_yaw: float | None = None
+        self._last_embedding: np.ndarray | None = None
 
         self.frame_count: int = 0
         self.stored_frame_count: int = 0
@@ -181,26 +199,33 @@ class SpatialMemory(Module):
         self.robot_locations: list[RobotLocation] = []
 
         # Track latest data for processing
+        self._latest_image: Image | None = None
+        self._latest_image_ts: float | None = None
         self._latest_video_frame: np.ndarray | None = None  # type: ignore[type-arg]
         self._process_interval = 1
+        self._process_lock = RLock()
+        self._stopped = False
 
         logger.info(f"SpatialMemory initialized with model {embedding_model}")
+
+    def _on_image(self, image_msg: Image) -> None:
+        """Keep the image timestamp together with the converted pixel data."""
+        if not hasattr(image_msg, "data"):
+            logger.warning("Received image message without data attribute")
+            return
+
+        frame = cv2.cvtColor(image_msg.data, cv2.COLOR_RGB2BGR)
+        with self._process_lock:
+            self._latest_image = image_msg
+            self._latest_image_ts = image_msg.ts
+            self._latest_video_frame = frame
 
     @rpc
     def start(self) -> None:
         super().start()
 
         # Subscribe to LCM streams
-        def set_video(image_msg: Image) -> None:
-            # Convert Image message to numpy array
-            if hasattr(image_msg, "data"):
-                frame = image_msg.data
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                self._latest_video_frame = frame
-            else:
-                logger.warning("Received image message without data attribute")
-
-        self._disposables.add(Disposable(self.color_image.subscribe(set_video)))
+        self._disposables.add(Disposable(self.color_image.subscribe(self._on_image)))
 
         # Start periodic processing using interval
         self._disposables.add(
@@ -209,32 +234,59 @@ class SpatialMemory(Module):
 
     @rpc
     def stop(self) -> None:
-        # Save data before shutdown
-        self.save()
+        # Stop frame processing before the final save; coordinator shutdown may call stop twice.
+        self._disposables.dispose()
+        with self._process_lock:
+            if self._stopped:
+                return
+            self._stopped = True
+            self.save()
 
-        if self._visual_memory:
-            self._visual_memory.clear()
+            if self._visual_memory:
+                self._visual_memory.clear()
 
         super().stop()
 
     def _process_frame(self) -> None:
+        with self._process_lock:
+            if self._stopped:
+                return
+            self._process_frame_locked()
+
+    def _process_frame_locked(self) -> None:
         """Process the latest frame with pose data if available."""
-        tf = self.tf.get("world", "base_link")
+        image = self._latest_image
+        frame = self._latest_video_frame
+        if image is None:
+            return
+        image_ts = image.ts
 
-        if tf is None:
+        tf = self.tf.get(
+            self.world_frame_id,
+            self.base_frame_id,
+            image_ts,
+            self.transform_tolerance_sec,
+        )
+
+        if tf is None or abs(tf.ts - image_ts) > self.transform_tolerance_sec:
             return
 
-        if self._latest_video_frame is None:
+        if frame is None:
             return
+
+        if image_ts == self._last_processed_image_ts:
+            return
+        self._last_processed_image_ts = image_ts
 
         # Create Pose object with position and orientation
-        current_pose = tf.to_pose()
+        current_pose = tf.to_pose(ts=image_ts)
 
         # Process the frame directly
         try:
             self.frame_count += 1
 
             # Check distance constraint
+            euler = tf.rotation.to_euler()
             if self.last_position is not None:
                 distance_moved = np.linalg.norm(
                     [
@@ -243,9 +295,21 @@ class SpatialMemory(Module):
                         current_pose.position.z - self.last_position.z,
                     ]
                 )
-                if distance_moved < self.min_distance_threshold:
+                yaw_moved = abs(
+                    np.arctan2(
+                        np.sin(float(euler.z) - float(self._last_rotation_yaw or 0.0)),
+                        np.cos(float(euler.z) - float(self._last_rotation_yaw or 0.0)),
+                    )
+                )
+                if (
+                    distance_moved < self.min_distance_threshold
+                    and (
+                        self.min_rotation_threshold <= 0
+                        or yaw_moved < self.min_rotation_threshold
+                    )
+                ):
                     logger.debug(
-                        f"Position has not moved enough: {distance_moved:.4f}m < {self.min_distance_threshold}m, skipping frame"
+                        f"Pose has not changed enough: {distance_moved:.4f}m, {yaw_moved:.3f}rad; skipping frame"
                     )
                     return
 
@@ -261,11 +325,29 @@ class SpatialMemory(Module):
             current_time = time.time()
 
             # Get embedding for the frame
-            frame_embedding = self.embedding_provider.get_embedding(self._latest_video_frame)
+            frame_embedding = self.embedding_provider.get_embedding(frame)
+
+            if (
+                self.similarity_threshold is not None
+                and self.last_position is not None
+                and self._last_embedding is not None
+                and distance_moved < 0.5
+                and yaw_moved < np.deg2rad(30)
+            ):
+                current_embedding = np.asarray(frame_embedding, dtype=float).reshape(-1)
+                previous_embedding = np.asarray(self._last_embedding, dtype=float).reshape(-1)
+                denominator = np.linalg.norm(current_embedding) * np.linalg.norm(previous_embedding)
+                similarity = (
+                    float(np.dot(current_embedding, previous_embedding) / denominator)
+                    if denominator
+                    else 0.0
+                )
+                if similarity >= self.similarity_threshold:
+                    logger.debug(f"Skipping near-identical local view (CLIP cosine {similarity:.3f})")
+                    return
 
             frame_id = f"frame_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
             # Get euler angles from quaternion orientation for metadata
-            euler = tf.rotation.to_euler()
 
             # Create metadata dictionary with primitive types only
             metadata = {
@@ -275,14 +357,15 @@ class SpatialMemory(Module):
                 "rot_x": float(euler.x),
                 "rot_y": float(euler.y),
                 "rot_z": float(euler.z),
-                "timestamp": current_time,
+                "timestamp": float(image_ts),
                 "frame_id": frame_id,
+                "coordinate_frame": self.world_frame_id,
             }
 
             # Store in vector database
             self.vector_db.add_image_vector(
                 vector_id=frame_id,
-                image=self._latest_video_frame,
+                image=frame,
                 embedding=frame_embedding,
                 metadata=metadata,
             )
@@ -290,6 +373,8 @@ class SpatialMemory(Module):
             # Update tracking variables
             self.last_position = current_pose.position
             self.last_record_time = current_time
+            self._last_rotation_yaw = float(euler.z)
+            self._last_embedding = np.asarray(frame_embedding, dtype=float).reshape(-1)
             self.stored_frame_count += 1
 
             logger.info(
@@ -428,6 +513,7 @@ class SpatialMemory(Module):
                 "rotation": (rotation_vec.x, rotation_vec.y, rotation_vec.z),
                 "frame_id": frame_id,
                 "timestamp": current_time,
+                "coordinate_frame": self.world_frame_id,
             }
 
         return combined_stream.pipe(
@@ -466,6 +552,110 @@ class SpatialMemory(Module):
         """
         logger.info(f"Querying spatial memory with text: '{text}'")
         return self.vector_db.query_by_text(text, limit)
+
+    @rpc
+    def get_visualization_snapshot(self) -> dict[str, Any]:
+        """Return bounded memory metadata and thumbnails for visualization.
+
+        Record positions are the robot pose when each image was observed, not
+        positions of objects depicted in those images.
+        """
+        with self._process_lock:
+            stored = self.vector_db.image_collection.get(include=["metadatas"])
+            ids = stored.get("ids", []) or []
+            metadatas = stored.get("metadatas", []) or []
+            rows = sorted(
+                zip(ids, metadatas, strict=False),
+                key=lambda row: float((row[1] or {}).get("timestamp", 0.0)),
+                reverse=True,
+            )[:12]
+            records = [self._visualization_record(record_id, metadata) for record_id, metadata in rows]
+            saved_locations = self.vector_db.location_collection.get(
+                include=["metadatas", "documents"]
+            )
+            location_ids = saved_locations.get("ids", []) or []
+            location_metadatas = saved_locations.get("metadatas", []) or []
+            location_names = saved_locations.get("documents", []) or []
+            locations = [
+                {
+                    "id": location_id,
+                    "name": str(location_names[index] or metadata.get("location_name", "")),
+                    "position": {
+                        "x": float(metadata.get("pos_x", 0.0)),
+                        "y": float(metadata.get("pos_y", 0.0)),
+                        "z": float(metadata.get("pos_z", 0.0)),
+                    },
+                    "coordinate_frame": str(
+                        metadata.get("coordinate_frame", self.world_frame_id)
+                    ),
+                    "timestamp": float(metadata.get("timestamp", 0.0)),
+                }
+                for index, (location_id, metadata) in enumerate(
+                    zip(location_ids, location_metadatas, strict=False)
+                )
+            ]
+            return {
+                "stats": {
+                    "frame_count": self.frame_count,
+                    "stored_frame_count": self.stored_frame_count,
+                    "record_count": len(ids),
+                    "location_count": len(locations),
+                },
+                "records": records,
+                "locations": locations,
+            }
+
+    @rpc
+    def search_visualization(self, query: str) -> list[dict[str, Any]]:
+        """Search existing CLIP image memory with an English visual description; return top three."""
+        with self._process_lock:
+            results = self.vector_db.query_by_text(query, limit=3)
+            records = []
+            for result in results[:3]:
+                metadata = result.get("metadata") or {}
+                distance = result.get("distance")
+                records.append(
+                    self._visualization_record(
+                        str(result.get("id", "")),
+                        metadata,
+                        similarity=None if distance is None else 1.0 - float(distance),
+                    )
+                )
+            return records
+
+    def _visualization_record(
+        self, record_id: str, metadata: dict[str, Any], similarity: float | None = None
+    ) -> dict[str, Any]:
+        """Serialize an image observation with a small optional JPEG preview."""
+        thumbnail = None
+        encoded = getattr(self._visual_memory, "images", {}).get(record_id)
+        if encoded:
+            try:
+                image_bytes = base64.b64decode(encoded)
+                image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if image is not None:
+                    height, width = image.shape[:2]
+                    if width > 320:
+                        image = cv2.resize(image, (320, max(1, round(height * 320 / width))))
+                    success, jpeg = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    if success:
+                        thumbnail = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+            except Exception:
+                logger.debug("Could not make spatial-memory thumbnail for %s", record_id)
+
+        return {
+            "id": record_id,
+            "timestamp": float(metadata.get("timestamp", 0.0)),
+            "coordinate_frame": str(metadata.get("coordinate_frame", self.world_frame_id)),
+            "position": {
+                "x": float(metadata.get("pos_x", 0.0)),
+                "y": float(metadata.get("pos_y", 0.0)),
+                "z": float(metadata.get("pos_z", 0.0)),
+            },
+            "thumbnail": thumbnail,
+            "similarity": similarity,
+            "label": metadata.get("label"),
+        }
 
     @rpc
     def add_robot_location(self, location: RobotLocation) -> bool:
@@ -508,7 +698,7 @@ class SpatialMemory(Module):
         Returns:
             True if successfully added, False otherwise
         """
-        tf = self.tf.get("world", "base_link")
+        tf = self.tf.get(self.world_frame_id, self.base_frame_id)
         if not tf:
             logger.error("No position available for robot location")
             return False

@@ -33,7 +33,8 @@ from reactivex.disposable import Disposable
 import socketio  # type: ignore[import-untyped]
 from starlette.applications import Starlette
 from starlette.responses import FileResponse, RedirectResponse, Response
-from starlette.routing import Route
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 import uvicorn
 
 from dimos.utils.data import get_data
@@ -242,6 +243,9 @@ class WebsocketVisModule(Module):
 
         async def serve_command_center(request):  # type: ignore[no-untyped-def]
             """Serve the command center 2D visualization (built React app)."""
+            local_index = _COMMAND_CENTER_DIR / "index.html"
+            if local_index.is_file():
+                return FileResponse(local_index, media_type="text/html")
             index_file = get_data("command_center.html")
             if index_file.exists():
                 return FileResponse(index_file, media_type="text/html")
@@ -255,6 +259,11 @@ class WebsocketVisModule(Module):
         routes = [
             Route("/", serve_index),
             Route("/command-center", serve_command_center),
+            Mount(
+                "/assets",
+                StaticFiles(directory=_COMMAND_CENTER_DIR / "assets", check_dir=False),
+                name="command-center-assets",
+            ),
         ]
 
         starlette_app = Starlette(routes=routes)

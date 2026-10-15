@@ -177,8 +177,8 @@ class SpatialVectorDB:
         filtered_results = {"ids": [], "metadatas": [], "distances": []}  # type: ignore[var-annotated]
 
         for i, metadata in enumerate(results["metadatas"]):  # type: ignore[arg-type]
-            item_x = metadata.get("x")
-            item_y = metadata.get("y")
+            item_x = metadata.get("pos_x")
+            item_y = metadata.get("pos_y")
 
             if item_x is not None and item_y is not None:
                 distance = np.sqrt((x - item_x) ** 2 + (y - item_y) ** 2)
@@ -206,31 +206,21 @@ class SpatialVectorDB:
 
         processed_results = []
 
-        for i, vector_id in enumerate(results["ids"]):
-            if isinstance(vector_id, list) and not vector_id:
-                continue
+        for i, vector_ids in enumerate(results["ids"]):
+            ids = vector_ids if isinstance(vector_ids, list) else [vector_ids]
+            metadata = results.get("metadatas", [{}] * len(results["ids"]))[i]
+            metadatas = metadata if isinstance(metadata, list) else [metadata]
+            distance = results.get("distances", [[] for _ in results["ids"]])[i]
+            distances = distance if isinstance(distance, list) else [distance]
 
-            lookup_id = vector_id[0] if isinstance(vector_id, list) else vector_id
-
-            # Create the result dictionary with metadata regardless of image availability
-            result = {
-                "metadata": results["metadatas"][i] if "metadatas" in results else {},
-                "id": lookup_id,
-            }
-
-            # Add distance if available
-            if "distances" in results:
-                result["distance"] = (
-                    results["distances"][i][0]
-                    if isinstance(results["distances"][i], list)
-                    else results["distances"][i]
-                )
-
-            # Get the image from visual memory
-            #image = self.visual_memory.get(lookup_id)
-            #result["image"] = image
-
-            processed_results.append(result)
+            for j, lookup_id in enumerate(ids):
+                result = {
+                    "metadata": metadatas[j] if j < len(metadatas) else {},
+                    "id": lookup_id,
+                }
+                if j < len(distances):
+                    result["distance"] = distances[j]
+                processed_results.append(result)
 
         return processed_results
 

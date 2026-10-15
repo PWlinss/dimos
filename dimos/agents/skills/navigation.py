@@ -36,10 +36,17 @@ logger = setup_logger()
 class NavigationSkillContainer(Module):
     _latest_image: Image | None = None
     _latest_odom: PoseStamped | None = None
+    _latest_odom_received_monotonic: float | None = None
     _skill_started: bool = False
     _similarity_threshold: float = 0.23
+    _goal_frame_id: str = "map"
+    _enable_visual_navigation: bool = True
+    _max_odom_age_sec: float | None = None
+    _require_coordinate_frame: bool = False
+    _semantic_query_ascii_only: bool = False
+    _vl_model: Any | None = None
 
-    rpc_calls: list[str] = [
+    navigation_rpc_calls: tuple[str, ...] = (
         "SpatialMemory.tag_location",
         "SpatialMemory.query_tagged_location",
         "SpatialMemory.query_by_text",
@@ -47,22 +54,42 @@ class NavigationSkillContainer(Module):
         "NavigationInterface.get_state",
         "NavigationInterface.is_goal_reached",
         "NavigationInterface.cancel_goal",
+    )
+    visual_navigation_rpc_calls: tuple[str, ...] = (
         "ObjectTracking.track",
         "ObjectTracking.stop_track",
         "ObjectTracking.is_tracking",
-    ]
+    )
+    rpc_calls: list[str] = [*navigation_rpc_calls, *visual_navigation_rpc_calls]
 
     color_image: In[Image]
     odom: In[PoseStamped]
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        goal_frame_id: str = "map",
+        enable_visual_navigation: bool = True,
+        max_odom_age_sec: float | None = None,
+        require_coordinate_frame: bool = False,
+        semantic_query_ascii_only: bool = False,
+    ) -> None:
         super().__init__()
         self._skill_started = False
+        self._goal_frame_id = goal_frame_id
+        self._enable_visual_navigation = enable_visual_navigation
+        self._max_odom_age_sec = max_odom_age_sec
+        self._require_coordinate_frame = require_coordinate_frame
+        self._semantic_query_ascii_only = semantic_query_ascii_only
+        self._latest_odom_received_monotonic = None
+        self.rpc_calls = [*self.navigation_rpc_calls]
+        if self._enable_visual_navigation:
+            self.rpc_calls.extend(self.visual_navigation_rpc_calls)
 
-        # Here to prevent unwanted imports in the file.
-        from dimos.models.vl.qwen import QwenVlModel
+        if self._enable_visual_navigation:
+            # Here to prevent unwanted imports in the file.
+            from dimos.models.vl.qwen import QwenVlModel
 
-        self._vl_model = QwenVlModel()
+            self._vl_model = QwenVlModel()
 
     @rpc
     def start(self) -> None:
@@ -80,6 +107,53 @@ class NavigationSkillContainer(Module):
 
     def _on_odom(self, odom: PoseStamped) -> None:
         self._latest_odom = odom
+        self._latest_odom_received_monotonic = time.monotonic()
+
+    def _odom_error(self) -> str | None:
+        """Validate the configured odometry frame and freshness contract."""
+
+        if self._latest_odom is None:
+            if self._max_odom_age_sec is None:
+                return None
+            return "Error: No odometry data received yet, cannot navigate."
+
+        if self._require_coordinate_frame and self._latest_odom.frame_id != self._goal_frame_id:
+            return (
+                f"Error: Odometry frame '{self._latest_odom.frame_id}' does not match "
+                f"the configured goal frame '{self._goal_frame_id}'."
+            )
+
+        if self._max_odom_age_sec is None:
+            return None
+        if self._latest_odom_received_monotonic is None:
+            return "Error: No odometry data received yet, cannot navigate."
+
+        odom_age = time.monotonic() - self._latest_odom_received_monotonic
+        if odom_age > self._max_odom_age_sec:
+            return (
+                f"Error: Odometry data is stale ({odom_age:.2f}s old; "
+                f"maximum age is {self._max_odom_age_sec:.2f}s), cannot navigate."
+            )
+        return None
+
+    def _coordinate_frame_error(self, coordinate_frame: Any) -> str | None:
+        if coordinate_frame is None and self._require_coordinate_frame:
+            return "Error: Location has no coordinate frame metadata."
+        if coordinate_frame is not None and coordinate_frame != self._goal_frame_id:
+            return (
+                f"Error: Location coordinate frame '{coordinate_frame}' does not match "
+                f"the configured goal frame '{self._goal_frame_id}'."
+            )
+        return None
+
+    @staticmethod
+    def _result_metadata(result: dict[str, Any]) -> dict[str, Any] | None:
+        metadata = result.get("metadata")
+        if isinstance(metadata, dict):
+            return metadata
+        if isinstance(metadata, list) and metadata and isinstance(metadata[0], dict):
+            return metadata[0]
+        return None
 
     @skill
     def tag_location(self, location_name: str) -> str:
@@ -97,16 +171,23 @@ class NavigationSkillContainer(Module):
         if not self._skill_started:
             raise ValueError(f"{self} has not been started.")
 
-        if not self._latest_odom:
+        if self._latest_odom is None:
+            if self._max_odom_age_sec is not None:
+                return "Error: No odometry data received yet, cannot tag location."
             return "No odometry data received yet, cannot tag location."
 
+        odom_error = self._odom_error()
+        if odom_error:
+            return odom_error
+
         position = self._latest_odom.position
-        rotation = self._latest_odom.orientation
+        rotation = self._latest_odom.orientation.to_euler()
 
         location = RobotLocation(
             name=location_name,
             position=(position.x, position.y, position.z),
             rotation=(rotation.x, rotation.y, rotation.z),
+            metadata={"coordinate_frame": self._goal_frame_id},
         )
 
         tag_location_rpc = self.get_rpc_calls("SpatialMemory.tag_location")
@@ -118,36 +199,49 @@ class NavigationSkillContainer(Module):
 
     @skill
     def navigate_with_text(self, query: str) -> str:
-        """Navigate to a location by querying the existing semantic map using natural language.
+        """Navigate by an exact saved tag name or an English visual description.
 
-        First attempts to locate an object in the robot's camera view using vision.
-        If the object is found, navigates to it. If not, falls back to querying the
-        semantic map for a location matching the description.
-        CALL THIS SKILL FOR ONE SUBJECT AT A TIME. For example: "Go to the person wearing a blue shirt in the living room",
-        you should call this skill twice, once for the person wearing a blue shirt and once for the living room.
+        Checks saved location tags first, then optionally checks the current camera
+        view, and finally queries spatial memory with the English description. If
+        the query is rejected, report that result and end this request without
+        retrying with alternate wording.
         Args:
-            query: Text query to search for in the semantic map
+            query: Exact original name for a saved tag, or concise English visual description
         """
 
         if not self._skill_started:
             raise ValueError(f"{self} has not been started.")
+
+        odom_error = self._odom_error()
+        if odom_error:
+            return odom_error
+
         success_msg = self._navigate_by_tagged_location(query)
         if success_msg:
             return success_msg
 
         logger.info(f"No tagged location found for {query}")
 
-        success_msg = self._navigate_to_object(query)
-        if success_msg:
-            return success_msg
+        if self._enable_visual_navigation:
+            success_msg = self._navigate_to_object(query)
+            if success_msg:
+                return success_msg
 
-        logger.info(f"No object in view found for {query}")
+            logger.info(f"No object in view found for {query}")
+
+        if self._semantic_query_ascii_only and (not query.strip() or not query.strip().isascii()):
+            return (
+                "Semantic-map search requires a non-empty English query; no navigation goal was sent. "
+                "Report this rejection and end this request without retrying."
+            )
 
         success_msg = self._navigate_using_semantic_map(query)
         if success_msg:
             return success_msg
 
-        return f"No tagged location called '{query}'. No object in view matching '{query}'. No matching location found in semantic map for '{query}'."
+        if self._enable_visual_navigation:
+            return f"No tagged location called '{query}'. No object in view matching '{query}'. No matching location found in semantic map for '{query}'."
+        return f"No tagged location called '{query}'. No matching location found in semantic map for '{query}'."
 
     def _navigate_by_tagged_location(self, query: str) -> str | None:
         try:
@@ -161,16 +255,25 @@ class NavigationSkillContainer(Module):
         if not robot_location:
             return None
 
+        metadata = getattr(robot_location, "metadata", None) or {}
+        frame_error = self._coordinate_frame_error(metadata.get("coordinate_frame"))
+        if frame_error:
+            return frame_error
+
         logger.info("Found tagged location", location=robot_location)
         goal_pose = PoseStamped(
             position=make_vector3(*robot_location.position),
             orientation=Quaternion.from_euler(Vector3(*robot_location.rotation)),
-            frame_id="map",
+            frame_id=self._goal_frame_id,
         )
 
         return self._navigate_to(goal_pose, f"Found a tagged location called '{query}'.")
 
     def _navigate_to(self, pose: PoseStamped, message: str) -> str:
+        odom_error = self._odom_error()
+        if odom_error:
+            return odom_error
+
         try:
             set_goal_rpc = self.get_rpc_calls("NavigationInterface.set_goal")
         except Exception:
@@ -252,7 +355,11 @@ class NavigationSkillContainer(Module):
         return None
 
     def _get_bbox_for_current_frame(self, query: str) -> BBox | None:
-        if self._latest_image is None:
+        if (
+            not self._enable_visual_navigation
+            or self._latest_image is None
+            or self._vl_model is None
+        ):
             return None
 
         return get_object_bbox_from_image(self._vl_model, self._latest_image, query)
@@ -266,9 +373,23 @@ class NavigationSkillContainer(Module):
         results = query_by_text_rpc(query)
 
         if not results:
-            return f"No matching location found in semantic map for '{query}'"
+            return f"No matching location found in semantic map for '{query}'; no navigation goal was sent."
 
         best_match = results[0]
+
+        metadata = self._result_metadata(best_match)
+        frame_error = self._coordinate_frame_error(
+            metadata.get("coordinate_frame") if metadata else None
+        )
+        if frame_error:
+            return frame_error
+
+        similarity = self._similarity_from_result(best_match)
+        if similarity < self._similarity_threshold:
+            return (
+                f"Semantic match similarity ({similarity:.4f}) is below the threshold "
+                f"({self._similarity_threshold:.4f}); no navigation goal was sent."
+            )
 
         goal_pose = self._get_goal_pose_from_result(best_match)
 
@@ -290,6 +411,22 @@ class NavigationSkillContainer(Module):
 
         return "Stopped"
 
+    @skill
+    def get_navigation_state(self) -> str:
+        """Return the current navigation state."""
+
+        if not self._skill_started:
+            raise ValueError(f"{self} has not been started.")
+
+        try:
+            get_state_rpc = self.get_rpc_calls("NavigationInterface.get_state")
+        except Exception:
+            return "Error: Navigation module is not connected."
+
+        state = get_state_rpc()
+        state_value = state.value if isinstance(state, NavigationState) else str(state)
+        return f"Navigation state: {state_value}"
+
     def _cancel_goal_and_stop(self) -> None:
         try:
             cancel_goal_rpc = self.get_rpc_calls("NavigationInterface.cancel_goal")
@@ -300,17 +437,18 @@ class NavigationSkillContainer(Module):
         cancel_goal_rpc()
 
     def _get_goal_pose_from_result(self, result: dict[str, Any]) -> PoseStamped | None:
-        similarity = 1.0 - (result.get("distance") or 1)
+        similarity = self._similarity_from_result(result)
         if similarity < self._similarity_threshold:
             logger.warning(
                 f"Match found but similarity score ({similarity:.4f}) is below threshold ({self._similarity_threshold})"
             )
             return None
 
-        metadata = result.get("metadata")
-        if not metadata:
+        first = self._result_metadata(result)
+        if not first:
             return None
-        first = metadata[0]
+        if self._coordinate_frame_error(first.get("coordinate_frame")):
+            return None
         pos_x = first.get("pos_x", 0)
         pos_y = first.get("pos_y", 0)
         theta = first.get("rot_z", 0)
@@ -318,8 +456,15 @@ class NavigationSkillContainer(Module):
         return PoseStamped(
             position=make_vector3(pos_x, pos_y, 0),
             orientation=Quaternion.from_euler(make_vector3(0, 0, theta)),
-            frame_id="map",
+            frame_id=self._goal_frame_id,
         )
+
+    @staticmethod
+    def _similarity_from_result(result: dict[str, Any]) -> float:
+        if "similarity" in result:
+            return float(result["similarity"])
+        distance = result.get("distance")
+        return 1.0 - float(distance if distance is not None else 1.0)
 
 
 navigation_skill = NavigationSkillContainer.blueprint

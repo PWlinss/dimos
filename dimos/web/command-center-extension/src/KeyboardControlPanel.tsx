@@ -93,7 +93,12 @@ export default function KeyboardControlPanel({
 
   const handleKeyDown = React.useCallback((event: KeyboardEvent) => {
     const normalizedKey = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-    if (!controlKeys.has(normalizedKey) || isEditableTarget(event.target)) {
+    if (!controlKeys.has(normalizedKey)) {
+      return;
+    }
+
+    if (isEditableTarget(event.target)) {
+      keysPressed.current.delete(normalizedKey);
       return;
     }
 
@@ -104,11 +109,12 @@ export default function KeyboardControlPanel({
 
   const handleKeyUp = React.useCallback((event: KeyboardEvent) => {
     const normalizedKey = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-    if (!controlKeys.has(normalizedKey) || isEditableTarget(event.target)) {
+    if (!controlKeys.has(normalizedKey)) {
       return;
     }
 
     keysPressed.current.delete(normalizedKey);
+    if (isEditableTarget(event.target)) return;
   }, []);
 
   // Start/stop keyboard control

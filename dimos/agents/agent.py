@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from queue import Empty, Queue
 from threading import Event, RLock, Thread
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 class AgentConfig(ModuleConfig):
     system_prompt: str | None = SYSTEM_PROMPT
     model: str = "gpt-4o"
+    model_kwargs: dict[str, Any] = field(default_factory=dict)
     model_fixture: str | None = None
 
 
@@ -91,16 +92,25 @@ class Agent(Module[AgentConfig]):
     def on_system_modules(self, modules: list[RPCClient]) -> None:
         assert self.rpc is not None
 
-        if self.config.model.startswith("ollama:"):
-            from dimos.agents.ollama_agent import ensure_ollama_model
-
-            ensure_ollama_model(self.config.model.removeprefix("ollama:"))
-
-        model: str | BaseChatModel = self.config.model
         if self.config.model_fixture is not None:
             from dimos.agents.testing import MockModel
 
-            model = MockModel(json_path=self.config.model_fixture)
+            model: str | BaseChatModel = MockModel(json_path=self.config.model_fixture)
+        elif self.config.model.startswith("ollama:"):
+            from dimos.agents.ollama_agent import ensure_ollama_model
+
+            ensure_ollama_model(self.config.model.removeprefix("ollama:"))
+            model = self.config.model
+            if self.config.model_kwargs:
+                from langchain.chat_models import init_chat_model
+
+                model = init_chat_model(self.config.model, **self.config.model_kwargs)
+        elif self.config.model_kwargs:
+            from langchain.chat_models import init_chat_model
+
+            model = init_chat_model(self.config.model, **self.config.model_kwargs)
+        else:
+            model = self.config.model
 
         with self._lock:
             # Here to prevent unwanted imports in the file.
@@ -112,6 +122,7 @@ class Agent(Module[AgentConfig]):
                 system_prompt=self.config.system_prompt,
             )
             self._thread.start()
+            self.agent_idle.publish(True)
 
     @rpc
     def add_message(self, message: BaseMessage) -> None:

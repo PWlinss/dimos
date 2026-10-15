@@ -22,6 +22,7 @@ using pre-trained models like CLIP, ResNet, etc.
 import base64
 import io
 import os
+from pathlib import Path
 import sys
 
 import cv2
@@ -72,7 +73,10 @@ class ImageEmbeddingProvider:
             )
 
             if self.model_name == "clip":
-                model_id = get_data("models_clip") / "model.onnx"
+                configured_path = os.getenv("DIMOS_CLIP_MODEL_PATH")
+                model_id = Path(configured_path).expanduser() if configured_path else get_data("models_clip") / "model.onnx"
+                if not model_id.is_file():
+                    raise FileNotFoundError(f"CLIP ONNX model not found: {model_id}")
                 self.model_path = str(model_id)  # type: ignore[assignment]  # Store for pickling
                 processor_id = "openai/clip-vit-base-patch32"
 

@@ -1,0 +1,42 @@
+.agent-memory-panel {
+  flex: 0 0 min(34vh, 320px);
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  color: #e8edf2;
+  background: #14191f;
+  border-top: 1px solid #39434e;
+  font: 13px/1.4 system-ui, sans-serif;
+}
+.memory-tabs, .agent-compose, .memory-search { display: flex; gap: 8px; align-items: center; padding: 8px 12px; }
+.memory-tabs { flex: 0 0 auto; border-bottom: 1px solid #303a44; }
+.memory-tabs button, .agent-compose button, .memory-search button {
+  color: #eef4fa; background: #293640; border: 1px solid #536372; border-radius: 4px; padding: 6px 11px; cursor: pointer;
+}
+.memory-tabs button[aria-selected="true"] { background: #176b91; border-color: #45a8d1; }
+.memory-tabs button:disabled, .agent-compose button:disabled, .memory-search button:disabled { opacity: .5; cursor: not-allowed; }
+.agent-connection-status { margin-left: auto; color: #a9bac8; }
+.agent-chat-panel, .agent-memory-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.memory-chat-list, .memory-card-list { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; }
+.memory-chat-entry, .memory-card { background: #1d252d; border: 1px solid #35414d; border-radius: 5px; padding: 8px; margin-bottom: 7px; overflow-wrap: anywhere; }
+.memory-chat-entry header { display: flex; justify-content: space-between; gap: 8px; color: #b9d4e3; }
+.memory-chat-entry time, .memory-card time { color: #9eabb6; font-size: 11px; }
+.memory-message-text { white-space: pre-wrap; margin-top: 5px; }
+.memory-chat-entry details { margin-top: 6px; }
+.memory-chat-entry pre { white-space: pre-wrap; margin: 4px 0 0; color: #d4dde5; }
+.role-human { border-left: 3px solid #56a9d6; }
+.role-ai { border-left: 3px solid #62bd86; }
+.role-tool { border-left: 3px solid #d9a84e; }
+.agent-compose { flex-wrap: wrap; border-top: 1px solid #303a44; }
+.agent-compose textarea { flex: 1 1 70%; min-width: 180px; resize: vertical; color: inherit; background: #0f1419; border: 1px solid #47535e; border-radius: 4px; padding: 7px; }
+.memory-search { flex-wrap: wrap; }
+.memory-search label { flex: 1 0 100%; color: #b9c8d4; }
+.memory-search input { flex: 1 1 220px; min-width: 120px; color: inherit; background: #0f1419; border: 1px solid #47535e; border-radius: 4px; padding: 7px; }
+.memory-meta, .memory-empty, .memory-waiting, .memory-error { color: #a9bac8; padding: 4px 12px; margin: 0; }
+.memory-error { color: #ff9a8e; }
+.memory-card-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 7px; }
+.memory-card { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+.memory-card img { width: 100%; max-height: 92px; object-fit: cover; border-radius: 3px; }
+.memory-card span, .memory-card small { color: #b9c8d4; font-size: 11px; }
+.memory-location { border-left: 3px solid #cf9d49; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }

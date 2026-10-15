@@ -20,11 +20,11 @@ set -euo pipefail
 ACTION="start"
 DIMOS_NX_BRIDGE_MODE="${DIMOS_NX_BRIDGE_MODE:-raw}"
 REQUIRE_CAMERA="${DIMOS_NX_REQUIRE_CAMERA:-false}"
+AGENTIC_MODE=false
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DIMOS_WORKTREE="${DIMOS_WORKTREE:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
-DIMOS_HOST_ROOT="$(cd "${DIMOS_WORKTREE}/../.." && pwd)"
-DIMOS_VENV="${DIMOS_VENV:-${DIMOS_HOST_ROOT}/.venv_ros310}"
-DIMOS_VIEWER="${DIMOS_VIEWER:-rerun-web}"
+DIMOS_VENV="${DIMOS_VENV:-${DIMOS_WORKTREE}/.venv}"
+DIMOS_VIEWER="${DIMOS_VIEWER:-}"
 DIMOS_CLI="${DIMOS_VENV}/bin/dimos"
 PUSAI_DDS_URI="${DIMOS_PUSAI_DDS_URI:-file://${SCRIPT_DIR}/cyclonedds_pusai_nx.xml}"
 NX_DATA_VERIFY_DURATION_SEC="${DIMOS_NX_DATA_VERIFY_DURATION_SEC:-20}"
@@ -32,10 +32,12 @@ PUSAI_STATE_DIR="${DIMOS_PUSAI_NX_STATE_DIR:-/tmp/dimos-pusai-nx-bridge}"
 PUSAI_LOG_DIR="${PUSAI_STATE_DIR}/logs"
 CAMERA_DECODER_INPUT_TOPIC="${DIMOS_NX_COLOR_IMAGE_COMPRESSED_TOPIC:-/dimos/color_image/compressed}"
 CAMERA_DECODER_OUTPUT_TOPIC="${DIMOS_NX_CAMERA_DECODER_OUTPUT_TOPIC:-/dimos/color_image}"
+QWEN_ENV_FILE="${HOME}/.config/dimos/qwen.env"
+AGENTIC_CONFIG_FILE="${DIMOS_NX_AGENTIC_CONFIG:-${HOME}/.config/dimos/nx-agentic.env}"
 
 usage() {
   cat <<'EOF'
-Usage: start_pusai_nx_bridge.sh [start|status|verify|stop|logs] [--raw|--map] [--with-camera]
+Usage: start_pusai_nx_bridge.sh [start|status|verify|stop|logs] [--raw|--map] [--with-camera] [--agentic]
 
   start   Start the selected Go2/NX DimOS bridge in daemon mode if no instance exists.
   status  Show the current DimOS instance.
@@ -46,6 +48,10 @@ Usage: start_pusai_nx_bridge.sh [start|status|verify|stop|logs] [--raw|--map] [-
   --map   Use mature /map input mode: /dimos/map -> DimOS global_costmap.
   --with-camera
           Require /dimos/color_image frames during verification.
+  --agentic
+          Run unitree-go2-nx-agentic (raw pointcloud, odom, camera and memory web).
+          Startup sends no motion commands; the cmd_vel topic is isolated. Cannot combine with --map.
+          Optional local settings: ~/.config/dimos/nx-agentic.env. Qwen credentials are read only from ~/.config/dimos/qwen.env.
 EOF
 }
 
@@ -62,6 +68,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --with-camera)
       REQUIRE_CAMERA=true
+      ;;
+    --agentic)
+      AGENTIC_MODE=true
       ;;
     --help|-h)
       usage
@@ -89,15 +98,45 @@ case "${DIMOS_NX_BRIDGE_MODE}" in
     ;;
 esac
 
+if [[ "${AGENTIC_MODE}" == true ]]; then
+  if [[ "${DIMOS_NX_BRIDGE_MODE}" != raw ]]; then
+    echo "--agentic requires raw pointcloud mode; --map is unsupported." >&2
+    exit 2
+  fi
+  BRIDGE_BLUEPRINT="unitree-go2-nx-agentic"
+  if [[ -z "${DIMOS_NX_REQUIRE_CAMERA+x}" ]]; then
+    REQUIRE_CAMERA=true
+  fi
+  if [[ -r "${AGENTIC_CONFIG_FILE}" ]]; then
+    # Local non-secret host paths; API credentials have a separate fixed file.
+    # shellcheck disable=SC1090
+    source "${AGENTIC_CONFIG_FILE}"
+  fi
+fi
+
+if [[ -z "${DIMOS_VIEWER}" ]]; then
+  if [[ "${AGENTIC_MODE}" == true ]]; then
+    DIMOS_VIEWER=none
+  else
+    DIMOS_VIEWER=rerun-web
+  fi
+fi
+DIMOS_CLI="${DIMOS_VENV}/bin/dimos"
+
 [[ -x "${DIMOS_CLI}" ]] || {
-  echo "DimOS CLI not found: ${DIMOS_CLI}. Set DIMOS_VENV explicitly." >&2
+  echo "DimOS CLI not found: ${DIMOS_CLI}. Set DIMOS_VENV in ${AGENTIC_CONFIG_FILE} or the environment." >&2
   exit 1
 }
 
 # Worker processes inherit this path and must load the bridge worktree, not the main checkout.
-export PYTHONPATH="${DIMOS_WORKTREE}${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONPATH="${DIMOS_WORKTREE}${DIMOS_EXTRA_PYTHONPATH:+:${DIMOS_EXTRA_PYTHONPATH}}${PYTHONPATH:+:${PYTHONPATH}}"
+export DIMOS_CLIP_MODEL_PATH="${DIMOS_CLIP_MODEL_PATH:-}"
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export CYCLONEDDS_URI="${PUSAI_DDS_URI}"
+if [[ "${AGENTIC_MODE}" == true ]]; then
+  export LCM_DEFAULT_URL="udpm://239.255.76.67:7791?ttl=0"
+  export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+fi
 
 # ROS Foxy/Humble setup scripts may read optional variables while unset.
 set +u
@@ -107,7 +146,20 @@ export DIMOS_NX_LIDAR_TOPIC=/dimos/registered_scan
 export DIMOS_NX_ODOM_TOPIC=/dimos/odom
 export DIMOS_NX_WORLD_FRAME_ID="${DIMOS_NX_WORLD_FRAME_ID:-odom}"
 export DIMOS_NX_COLOR_IMAGE_TOPIC=/dimos/color_image
-export DIMOS_NX_CMD_VEL_TOPIC=/dimos/cmd_vel
+if [[ "${AGENTIC_MODE}" == true ]]; then
+  DIMOS_NX_CMD_VEL_TOPIC="${DIMOS_NX_CMD_VEL_TOPIC:-/dimos/agentic_probe/cmd_vel}"
+  if [[ "${ACTION}" == start ]]; then
+    case "${DIMOS_NX_CMD_VEL_TOPIC}" in
+      cmd_vel|/cmd_vel|dimos/cmd_vel|/dimos/cmd_vel)
+        echo "Refusing physical cmd_vel topic in --agentic mode: ${DIMOS_NX_CMD_VEL_TOPIC}" >&2
+        exit 2
+        ;;
+    esac
+  fi
+  export DIMOS_NX_CMD_VEL_TOPIC
+else
+  export DIMOS_NX_CMD_VEL_TOPIC=/dimos/cmd_vel
+fi
 export DIMOS_NX_MAP_TOPIC="${DIMOS_NX_MAP_TOPIC:-/dimos/map}"
 export DIMOS_NX_VOXEL_SIZE="${DIMOS_NX_VOXEL_SIZE:-0.1}"
 export DIMOS_NX_COSTMAP_ALGO="${DIMOS_NX_COSTMAP_ALGO:-height_cost}"
@@ -161,7 +213,9 @@ verify_deployment() {
     failed=1
   fi
 
-  if curl -fsS --max-time 5 -o /dev/null http://localhost:9090; then
+  if [[ "${AGENTIC_MODE}" == true ]]; then
+    echo "[SKIP] Rerun Web: disabled for agentic blueprint"
+  elif curl -fsS --max-time 5 -o /dev/null http://localhost:9090; then
     echo "[PASS] Rerun Web: http://localhost:9090"
   else
     echo "[FAIL] Rerun Web is unavailable on port 9090" >&2
@@ -191,6 +245,33 @@ cleanup_dimos_processes() {
   live_pids="$(pgrep -f "${DIMOS_VENV}/bin/python" || true)"
   if [[ -n "${live_pids}" ]]; then
     kill -KILL ${live_pids} 2>/dev/null || true
+  fi
+}
+
+load_agentic_model_env() {
+  if [[ ! -r "${QWEN_ENV_FILE}" ]]; then
+    echo "QWEN environment file is not readable: ${QWEN_ENV_FILE}" >&2
+    return 1
+  fi
+
+  unset QWEN_API_KEY QWEN_BASE_URL QWEN_API_BASE_URL
+  set +u
+  # shellcheck disable=SC1090
+  source "${QWEN_ENV_FILE}"
+  set -u
+
+  local name
+  for name in ${!QWEN_@}; do
+    export "${name}"
+  done
+  if [[ -z "${QWEN_API_KEY:-}" ]]; then
+    echo "QWEN_API_KEY is missing from ${QWEN_ENV_FILE}" >&2
+    return 1
+  fi
+  export OPENAI_API_KEY="${QWEN_API_KEY}"
+  local api_base_url="${QWEN_BASE_URL:-${QWEN_API_BASE_URL:-}}"
+  if [[ -n "${api_base_url}" ]]; then
+    export OPENAI_BASE_URL="${api_base_url}"
   fi
 }
 
@@ -237,7 +318,29 @@ stop_process() {
   rm -f "${pid_file}"
 }
 
+find_matching_camera_decoder() {
+  local process_line pid args
+  while IFS= read -r process_line; do
+    pid="${process_line%% *}"
+    args="${process_line#* }"
+    [[ "${args}" == *compressed_image_to_image.py* ]] || continue
+    [[ "${args}" == *"input_topic:=${CAMERA_DECODER_INPUT_TOPIC}"* ]] || continue
+    [[ "${args}" == *"output_topic:=${CAMERA_DECODER_OUTPUT_TOPIC}"* ]] || continue
+    printf '%s\n' "${pid}"
+    return 0
+  done < <(pgrep -af -- 'compressed_image_to_image[.]py' || true)
+  return 1
+}
+
 start_camera_decoder() {
+  if [[ "${AGENTIC_MODE}" == true ]]; then
+    local existing_pid
+    existing_pid="$(find_matching_camera_decoder || true)"
+    if [[ -n "${existing_pid}" ]]; then
+      echo "reusing camera decoder (pid ${existing_pid}); it will not be managed by this script"
+      return 0
+    fi
+  fi
   start_process camera_decoder env \
     RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
     CYCLONEDDS_URI="${PUSAI_DDS_URI}" \
@@ -298,6 +401,18 @@ EOF
 
 case "${ACTION}" in
   start)
+    if [[ "${AGENTIC_MODE}" == true ]]; then
+      if [[ -z "${DIMOS_CLIP_MODEL_PATH}" || ! -f "${DIMOS_CLIP_MODEL_PATH}" ]]; then
+        echo "DIMOS_CLIP_MODEL_PATH must name an existing local ONNX model file; set it in ${AGENTIC_CONFIG_FILE}." >&2
+        exit 1
+      fi
+      if [[ ! -f "${DIMOS_WORKTREE}/dimos/web/command-center-extension/dist-standalone/index.html" ]]; then
+        echo "Command Center build missing. Run scripts/prepare_pusai_nx_agentic.sh once." >&2
+        exit 1
+      fi
+      load_agentic_model_env
+      export LCM_DEFAULT_URL="udpm://239.255.76.67:7791?ttl=0"
+    fi
     ensure_pusai_lcm_system_config
     status_output="$("${DIMOS_CLI}" status 2>&1 || true)"
 	    if [[ "${status_output}" == *"Run ID:"* ]]; then
@@ -307,7 +422,9 @@ case "${ACTION}" in
 	      verify_deployment
 	      exit $?
 	    fi
-	    cleanup_dimos_processes
+	    if [[ "${AGENTIC_MODE}" != true ]]; then
+	      cleanup_dimos_processes
+	    fi
 	    start_camera_decoder
 	    cd "${DIMOS_WORKTREE}"
 	    "${DIMOS_CLI}" --viewer "${DIMOS_VIEWER}" run "${BRIDGE_BLUEPRINT}" --daemon
@@ -323,7 +440,9 @@ case "${ACTION}" in
 	  stop)
 	    stop_camera_decoder
 	    "${DIMOS_CLI}" stop || true
-	    cleanup_dimos_processes
+	    if [[ "${AGENTIC_MODE}" != true ]]; then
+	      cleanup_dimos_processes
+	    fi
 	    ;;
   logs)
     exec "${DIMOS_CLI}" log -f

@@ -28,6 +28,32 @@ from dimos.agents_deprecated.memory.image_embedding import ImageEmbeddingProvide
 from dimos.stream.video_provider import VideoProvider
 
 
+def test_clip_model_path_override_avoids_data_download(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    import onnxruntime
+    from transformers import CLIPProcessor
+
+    model_path = tmp_path / "model.onnx"
+    model_path.touch()
+    monkeypatch.setenv("DIMOS_CLIP_MODEL_PATH", str(model_path))
+    monkeypatch.setattr(
+        "dimos.agents_deprecated.memory.image_embedding.get_data",
+        lambda name: pytest.fail("configured model must not trigger data discovery/download"),
+    )
+    loaded = []
+    monkeypatch.setattr(
+        onnxruntime,
+        "InferenceSession",
+        lambda path, **kwargs: loaded.append(path) or SimpleNamespace(get_providers=lambda: ["CPUExecutionProvider"]),
+    )
+    monkeypatch.setattr(CLIPProcessor, "from_pretrained", lambda *args, **kwargs: object())
+
+    provider = ImageEmbeddingProvider()
+    assert loaded == [str(model_path)]
+    assert provider.model_path == str(model_path)
+
+
 @pytest.mark.slow
 class TestImageEmbedding:
     """Test class for CLIP image embedding functionality."""

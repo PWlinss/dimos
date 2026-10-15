@@ -17,5 +17,11 @@ export default defineConfig({
   server: {
     port: 3000,
     open: false,
+    proxy: {
+      "/socket.io": {
+        target: "http://127.0.0.1:7779",
+        ws: true,
+      },
+    },
   },
 });

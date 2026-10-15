@@ -16,8 +16,11 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.serialization import deserialize_message, serialize_message
 from sensor_msgs.msg import PointCloud2
 
+from robot_clock_sync import SourceStampGuard, map_stamp, read_snapshot, stamp_seconds
+
 
 _LENGTH = struct.Struct("!I")
+_CLOUD_METADATA = struct.Struct("!qIQQ36s")
 _DEFAULT_PORT = 39102
 _DEFAULT_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 _DEFAULT_CONNECT_TIMEOUT_SEC = 0.2
@@ -90,9 +93,11 @@ class PointCloudTcpSender(Node):
         self.declare_parameter("retry_backoff_max_sec", _DEFAULT_RETRY_BACKOFF_MAX_SEC)
         self.declare_parameter("input_reliability", "reliable")
         self.declare_parameter("stats_interval_sec", 2.0)
+        self.declare_parameter("clock_sync_file", "")
 
         self._host = str(self.get_parameter("tcp_host").value)
         self._port = int(self.get_parameter("tcp_port").value)
+        self._clock_sync_file = str(self.get_parameter("clock_sync_file").value)
         self._max_rate_hz = _validate_positive_finite(
             self.get_parameter("max_rate_hz").value, "max_rate_hz"
         )
@@ -190,6 +195,22 @@ class PointCloudTcpSender(Node):
             return
 
         payload = serialize_message(message)
+        if self._clock_sync_file:
+            try:
+                sec = int(message.header.stamp.sec)
+                nanosec = int(message.header.stamp.nanosec)
+                stamp_seconds(sec, nanosec)
+            except (AttributeError, TypeError, ValueError) as error:
+                self._send_failures += 1
+                self.get_logger().warning(f"dropped cloud with invalid source stamp: {error}")
+                return
+            try:
+                session = str(read_snapshot(self._clock_sync_file)["session"]).encode("ascii")[:36]
+            except (KeyError, ValueError, OSError, UnicodeEncodeError):
+                session = b""
+            payload = _CLOUD_METADATA.pack(
+                sec, nanosec, time.time_ns(), time.monotonic_ns(), session.ljust(36, b"\0")
+            ) + payload
         try:
             self._connection.sendall(_LENGTH.pack(len(payload)))
             self._connection.sendall(payload)
@@ -222,9 +243,17 @@ class PointCloudTcpReceiver(Node):
         self.declare_parameter("tcp_port", _DEFAULT_PORT)
         self.declare_parameter("max_message_bytes", _DEFAULT_MAX_MESSAGE_BYTES)
         self.declare_parameter("stats_interval_sec", 2.0)
+        self.declare_parameter("clock_sync_file", "")
+        self.declare_parameter("max_source_age_sec", 0.5)
 
         self._host = str(self.get_parameter("bind_host").value)
         self._port = int(self.get_parameter("tcp_port").value)
+        self._clock_sync_file = str(self.get_parameter("clock_sync_file").value)
+        self._max_source_age_sec = _validate_positive_finite(
+            self.get_parameter("max_source_age_sec").value, "max_source_age_sec"
+        )
+        self._source_stamp_guard = SourceStampGuard()
+        self._last_drop_log = 0.0
         self._max_message_bytes = _validate_positive_int(
             self.get_parameter("max_message_bytes").value, "max_message_bytes"
         )
@@ -341,10 +370,45 @@ class PointCloudTcpReceiver(Node):
         except queue.Empty:
             return
         try:
-            message = deserialize_message(payload, PointCloud2)
+            snapshot = None
+            if self._clock_sync_file:
+                if len(payload) <= _CLOUD_METADATA.size:
+                    raise ValueError("missing cloud clock metadata")
+                sec, nanosec, _, _, session = _CLOUD_METADATA.unpack_from(payload)
+                snapshot = read_snapshot(self._clock_sync_file)
+                if session.rstrip(b"\0").decode("ascii") != snapshot["session"]:
+                    raise ValueError("cloud belongs to a different clock session")
+                message_bytes = payload[_CLOUD_METADATA.size:]
+            else:
+                sec = nanosec = None
+                message_bytes = payload
+            message = (
+                deserialize_message(message_bytes, PointCloud2)
+                if self._clock_sync_file
+                else deserialize_message(payload, PointCloud2)
+            )
+            if snapshot is not None:
+                source_stamp = (int(message.header.stamp.sec), int(message.header.stamp.nanosec))
+                if source_stamp != (sec, nanosec):
+                    raise ValueError("cloud source stamp metadata mismatch")
+                mapped_sec, mapped_nanosec = map_stamp(
+                    sec, nanosec, snapshot, max_age_sec=self._max_source_age_sec
+                )
+                self._source_stamp_guard.accept(
+                    sec,
+                    nanosec,
+                    snapshot["session"],
+                    mapped_sec,
+                    mapped_nanosec,
+                )
+                message.header.stamp.sec = mapped_sec
+                message.header.stamp.nanosec = mapped_nanosec
         except Exception as error:
             self._receive_failures += 1
-            self.get_logger().warning(f"discarded invalid PointCloud2 payload: {error}")
+            now = time.monotonic()
+            if now - self._last_drop_log >= 1.0:
+                self._last_drop_log = now
+                self.get_logger().warning(f"discarded unmappable PointCloud2 payload: {error}")
             return
         self._publisher.publish(message)
         self._published += 1

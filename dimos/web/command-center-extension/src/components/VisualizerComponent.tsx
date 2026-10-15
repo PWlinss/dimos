@@ -1,8 +1,9 @@
 import * as d3 from "d3";
 import * as React from "react";
 
-import { Costmap, Path, Vector } from "../types";
+import { Costmap, MemoryLocation, MemoryRecord, Path, Vector } from "../types";
 import CostmapLayer from "./CostmapLayer";
+import MemoryMarkers from "./MemoryMarkers";
 import PathLayer from "./PathLayer";
 import VectorLayer from "./VectorLayer";
 
@@ -10,9 +11,11 @@ interface VisualizerComponentProps {
   costmap: Costmap | null;
   robotPose: Vector | null;
   path: Path | null;
+  memoryRecords: MemoryRecord[];
+  memoryLocations: MemoryLocation[];
 }
 
-const VisualizerComponent: React.FC<VisualizerComponentProps> = ({ costmap, robotPose, path }) => {
+const VisualizerComponent: React.FC<VisualizerComponentProps> = ({ costmap, robotPose, path, memoryRecords, memoryLocations }) => {
   const svgRef = React.useRef<SVGSVGElement>(null);
   const [dimensions, setDimensions] = React.useState({ width: 800, height: 600 });
   const { width, height } = dimensions;
@@ -93,6 +96,9 @@ const VisualizerComponent: React.FC<VisualizerComponentProps> = ({ costmap, robo
         {path && worldToPx && <PathLayer path={path} worldToPx={worldToPx} />}
         {robotPose && worldToPx && (
           <VectorLayer vector={robotPose} label="robot" worldToPx={worldToPx} />
+        )}
+        {worldToPx && (memoryRecords.length > 0 || memoryLocations.length > 0) && (
+          <MemoryMarkers records={memoryRecords} locations={memoryLocations} worldToPx={worldToPx} />
         )}
       </svg>
     </div>

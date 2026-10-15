@@ -14,11 +14,17 @@
 
 import asyncio
 import os
+from threading import RLock
 import time
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from reactivex import operators as ops
+from reactivex.disposable import CompositeDisposable
 
+from dimos.agents_deprecated.memory.spatial_vector_db import SpatialVectorDB
+from dimos.agents_deprecated.memory.visual_memory import VisualMemory
 from dimos.core.core import rpc
 from dimos.core.module import Module
 from dimos.core.module_coordinator import ModuleCoordinator
@@ -33,6 +39,101 @@ from dimos.utils.logging_config import setup_logger
 from dimos.utils.testing import TimedSensorReplay
 
 logger = setup_logger()
+
+
+def _spatial_memory_for_keyframe_test() -> SpatialMemory:
+    memory = SpatialMemory.__new__(SpatialMemory)
+    memory._latest_image = SimpleNamespace(ts=1.0)
+    memory._latest_video_frame = np.zeros((8, 8, 3), dtype=np.uint8)
+    memory.world_frame_id = "odom"
+    memory.base_frame_id = "base_link"
+    memory.transform_tolerance_sec = 0.25
+    memory.min_distance_threshold = 0.2
+    memory.min_rotation_threshold = np.deg2rad(15)
+    memory.similarity_threshold = 0.95
+    memory.last_position = None
+    memory.last_record_time = None
+    memory._last_processed_image_ts = None
+    memory._last_rotation_yaw = None
+    memory._last_embedding = None
+    memory.min_time_threshold = 0.0
+    memory.frame_count = 0
+    memory.stored_frame_count = 0
+    memory.embedding_provider = SimpleNamespace(get_embedding=lambda _: np.array([1.0, 0.0]))
+    memory.vector_db = SimpleNamespace(add_image_vector=lambda **_: None)
+    memory._visual_memory = None
+    memory.visual_memory_path = None
+
+    class FakeTF:
+        ts = 1.0
+        rotation = SimpleNamespace(to_euler=lambda: SimpleNamespace(x=0.0, y=0.0, z=0.0))
+
+        def to_pose(self, ts):
+            return SimpleNamespace(
+                position=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+                ts=ts,
+            )
+
+    memory._tf = SimpleNamespace(get=lambda *_: FakeTF())
+    return memory
+
+
+def test_spatial_memory_skips_repeated_image_timestamp() -> None:
+    memory = _spatial_memory_for_keyframe_test()
+    memory._process_frame_locked()
+    memory._process_frame_locked()
+    assert memory.stored_frame_count == 1
+
+
+def test_spatial_memory_rejects_stationary_odom_drift_but_keeps_changed_view() -> None:
+    memory = _spatial_memory_for_keyframe_test()
+    memory._process_frame_locked()
+
+    for index in range(1, 22):
+        image_ts = float(index + 1)
+        memory._latest_image = SimpleNamespace(ts=image_ts)
+        x = index * 0.01
+        memory._tf.get = lambda *_, x=x, ts=image_ts: SimpleNamespace(
+            ts=ts,
+            rotation=SimpleNamespace(
+                to_euler=lambda: SimpleNamespace(x=0.0, y=0.0, z=0.0)
+            ),
+            to_pose=lambda ts: SimpleNamespace(
+                position=SimpleNamespace(x=x, y=0.0, z=0.0), ts=ts
+            ),
+        )
+        memory._process_frame_locked()
+
+    assert memory.stored_frame_count == 1
+
+    memory._latest_image = SimpleNamespace(ts=23.0)
+    memory.embedding_provider.get_embedding = lambda _: np.array([0.0, 1.0])
+    memory._tf.get = lambda *_: SimpleNamespace(
+        ts=23.0,
+        rotation=SimpleNamespace(to_euler=lambda: SimpleNamespace(x=0.0, y=0.0, z=0.0)),
+        to_pose=lambda ts: SimpleNamespace(
+            position=SimpleNamespace(x=0.21, y=0.0, z=0.0), ts=ts
+        ),
+    )
+    memory._process_frame_locked()
+    assert memory.stored_frame_count == 2
+
+
+def test_spatial_memory_keeps_a_significant_turn() -> None:
+    memory = _spatial_memory_for_keyframe_test()
+    memory._process_frame_locked()
+    memory._latest_image = SimpleNamespace(ts=2.0)
+    memory._tf.get = lambda *_: SimpleNamespace(
+        ts=2.0,
+        rotation=SimpleNamespace(
+            to_euler=lambda: SimpleNamespace(x=0.0, y=0.0, z=np.deg2rad(35))
+        ),
+        to_pose=lambda ts: SimpleNamespace(
+            position=SimpleNamespace(x=0.0, y=0.0, z=0.0), ts=ts
+        ),
+    )
+    memory._process_frame_locked()
+    assert memory.stored_frame_count == 2
 
 
 class VideoReplayModule(Module):
@@ -119,6 +220,68 @@ def dimos():
         yield dimos
     finally:
         dimos.stop()
+
+
+def test_spatial_memory_repeated_stop_preserves_saved_images(tmp_path, monkeypatch) -> None:
+    memory_path = tmp_path / "visual_memory.pkl"
+    visual_memory = VisualMemory(output_dir=str(tmp_path))
+    visual_memory.add("frame-1", np.zeros((8, 8, 3), dtype=np.uint8))
+
+    spatial_memory = SpatialMemory.__new__(SpatialMemory)
+    spatial_memory._disposables = CompositeDisposable()
+    spatial_memory._process_lock = RLock()
+    spatial_memory._stopped = False
+    spatial_memory._visual_memory = visual_memory
+    spatial_memory.visual_memory_path = str(memory_path)
+    monkeypatch.setattr(Module, "stop", lambda self: None)
+
+    spatial_memory.stop()
+    spatial_memory.stop()
+
+    loaded = VisualMemory.load(str(memory_path), output_dir=str(tmp_path))
+    assert loaded.count() == 1
+    assert loaded.get("frame-1") is not None
+
+
+def test_spatial_vector_query_uses_spatial_memory_position_metadata() -> None:
+    class FakeCollection:
+        def get(self):
+            return {
+                "ids": ["far", "near-a", "near-b"],
+                "metadatas": [
+                    {"pos_x": 3.0, "pos_y": 0.0},
+                    {"pos_x": 0.5, "pos_y": 0.0},
+                    {"pos_x": 0.2, "pos_y": 0.2},
+                ],
+            }
+
+    vector_db = SpatialVectorDB.__new__(SpatialVectorDB)
+    vector_db.image_collection = FakeCollection()
+    vector_db.visual_memory = VisualMemory()
+
+    results = vector_db.query_by_location(0.0, 0.0, radius=1.0, limit=2)
+
+    assert [result["id"] for result in results] == ["near-b", "near-a"]
+    assert results[0]["distance"] == pytest.approx(np.sqrt(0.08))
+
+
+def test_process_query_results_handles_nested_and_flat_results() -> None:
+    vector_db = SpatialVectorDB.__new__(SpatialVectorDB)
+    nested = vector_db._process_query_results(
+        {
+            "ids": [["first", "second", "third"]],
+            "metadatas": [[{"label": "a"}, {"label": "b"}, {"label": "c"}]],
+            "distances": [[0.1, 0.2, 0.3]],
+        }
+    )
+    flat = vector_db._process_query_results(
+        {"ids": ["location"], "metadatas": [{"pos_x": 1.0}], "distances": [0.4]}
+    )
+
+    assert [result["id"] for result in nested] == ["first", "second", "third"]
+    assert [result["metadata"]["label"] for result in nested] == ["a", "b", "c"]
+    assert [result["distance"] for result in nested] == [0.1, 0.2, 0.3]
+    assert flat == [{"id": "location", "metadata": {"pos_x": 1.0}, "distance": 0.4}]
 
 
 @pytest.mark.slow
