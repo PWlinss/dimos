@@ -31,3 +31,36 @@ scripts/start_pusai_nx_bridge.sh stop --agentic
 ```
 
 Agentic verification requires camera frames by default, as well as NX pointcloud and odometry. Pass `DIMOS_NX_REQUIRE_CAMERA=false` only when intentionally verifying without camera frames. The launcher checks the Qwen file, CLIP model file, and frontend build before starting. It may request preconfigured passwordless sudo once to set local multicast and socket-buffer settings. Existing non-agentic `--raw` and `--map` commands remain supported.
+
+## Opt-in closed-loop indoor VLN
+
+The old `--agentic` blueprint is unchanged. The separate `unitree-go2-nx-closed-loop`
+blueprint adds candidate retrieval, short navigation segments, and result/image feedback.
+It uses the same Command Center, persistent spatial memory, `odom` frame, A* planner
+and direct `/dimos/cmd_vel` transport. It does not add a relay or change robot gates.
+
+When ready for a supervised deployment, stop the current instance before switching:
+
+```bash
+scripts/start_pusai_nx_bridge.sh stop --agentic
+scripts/start_pusai_nx_bridge.sh start --closed-loop
+scripts/start_pusai_nx_bridge.sh status --closed-loop
+scripts/start_pusai_nx_bridge.sh verify --closed-loop
+```
+
+Send a normal request such as "go home" or "go to the storage box". The Agent first
+retrieves candidates without motion, then selects a candidate ID for one segment.
+After each segment, the module sends the outcome, actual pose and a fresh camera image
+back to the Agent. The Agent decides whether to continue or explicitly finish.
+Ambiguous matches require user clarification. Saved poses are historical observation
+positions, not estimated object positions; this does not implement precise visual servoing.
+
+Defaults bound each task to six segments, at most 2 m straight-line goal displacement
+per segment, 45 seconds per segment and 180 seconds overall. A* paths may be longer
+than the straight-line displacement. Failure, stale odometry, missing fresh imagery,
+cancellation or exhausted budget ends continuation. "stop" cancels the current task.
+Only a new user message permits starting a new task; result callbacks cannot reset
+the step/time budget by silently calling `navigate_with_text` again.
+The existing green Stop button cancels the task directly, without waiting for Qwen.
+The new code must pass offline mock tests before hardware deployment; mock success
+does not establish real-robot visual goal recognition or navigation accuracy.

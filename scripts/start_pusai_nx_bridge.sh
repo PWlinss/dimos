@@ -21,6 +21,7 @@ ACTION="start"
 DIMOS_NX_BRIDGE_MODE="${DIMOS_NX_BRIDGE_MODE:-raw}"
 REQUIRE_CAMERA="${DIMOS_NX_REQUIRE_CAMERA:-false}"
 AGENTIC_MODE=false
+CLOSED_LOOP_MODE=false
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DIMOS_WORKTREE="${DIMOS_WORKTREE:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 DIMOS_VENV="${DIMOS_VENV:-${DIMOS_WORKTREE}/.venv}"
@@ -37,7 +38,7 @@ AGENTIC_CONFIG_FILE="${DIMOS_NX_AGENTIC_CONFIG:-${HOME}/.config/dimos/nx-agentic
 
 usage() {
   cat <<'EOF'
-Usage: start_pusai_nx_bridge.sh [start|status|verify|stop|logs] [--raw|--map] [--with-camera] [--agentic]
+Usage: start_pusai_nx_bridge.sh [start|status|verify|stop|logs] [--raw|--map] [--with-camera] [--agentic|--closed-loop]
 
   start   Start the selected Go2/NX DimOS bridge in daemon mode if no instance exists.
   status  Show the current DimOS instance.
@@ -52,6 +53,9 @@ Usage: start_pusai_nx_bridge.sh [start|status|verify|stop|logs] [--raw|--map] [-
           Run unitree-go2-nx-agentic (raw pointcloud, odom, camera and memory web).
           Publish velocity commands directly to /dimos/cmd_vel through the existing Go2 gates. Cannot combine with --map.
           Optional local settings: ~/.config/dimos/nx-agentic.env. Qwen credentials are read only from ~/.config/dimos/qwen.env.
+  --closed-loop
+          Opt in to unitree-go2-nx-closed-loop: candidate retrieval, bounded navigation
+          segments and fresh-image feedback to the Agent. Implies --agentic.
 EOF
 }
 
@@ -71,6 +75,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --agentic)
       AGENTIC_MODE=true
+      ;;
+    --closed-loop)
+      AGENTIC_MODE=true
+      CLOSED_LOOP_MODE=true
       ;;
     --help|-h)
       usage
@@ -104,6 +112,9 @@ if [[ "${AGENTIC_MODE}" == true ]]; then
     exit 2
   fi
   BRIDGE_BLUEPRINT="unitree-go2-nx-agentic"
+  if [[ "${CLOSED_LOOP_MODE}" == true ]]; then
+    BRIDGE_BLUEPRINT="unitree-go2-nx-closed-loop"
+  fi
   if [[ -z "${DIMOS_NX_REQUIRE_CAMERA+x}" ]]; then
     REQUIRE_CAMERA=true
   fi
