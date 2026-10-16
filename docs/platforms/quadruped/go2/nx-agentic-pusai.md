@@ -1,6 +1,6 @@
 # Go2 NX agentic on Pusai
 
-This starts `unitree-go2-nx-agentic`, the camera decoder, and the Command Center at `http://localhost:7779`. Rerun is disabled. Startup sends no motion command; `DIMOS_NX_CMD_VEL_TOPIC` defaults to the isolated `/dimos/agentic_probe/cmd_vel` topic. Do not remap it to a physical controller topic.
+This starts `unitree-go2-nx-agentic`, the camera decoder, and the Command Center at `http://localhost:7779`. Rerun is disabled. Navigation and keyboard velocity commands publish directly to `/dimos/cmd_vel`, using the existing Go2 rate limits, timeout protection, and movement gates. No extra topic-forwarding process is needed. This launcher does not change the Go2 movement gates.
 
 The imported `unitree-go2-agentic-mcp-streamvln` blueprint is an experimental legacy path, not this NX deployment. Its StreamVLN movement is disabled by default; do not enable or run that blueprint on the current Go2 without a separate safety-chain review.
 

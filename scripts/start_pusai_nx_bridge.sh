@@ -50,7 +50,7 @@ Usage: start_pusai_nx_bridge.sh [start|status|verify|stop|logs] [--raw|--map] [-
           Require /dimos/color_image frames during verification.
   --agentic
           Run unitree-go2-nx-agentic (raw pointcloud, odom, camera and memory web).
-          Startup sends no motion commands; the cmd_vel topic is isolated. Cannot combine with --map.
+          Publish velocity commands directly to /dimos/cmd_vel through the existing Go2 gates. Cannot combine with --map.
           Optional local settings: ~/.config/dimos/nx-agentic.env. Qwen credentials are read only from ~/.config/dimos/qwen.env.
 EOF
 }
@@ -146,20 +146,7 @@ export DIMOS_NX_LIDAR_TOPIC=/dimos/registered_scan
 export DIMOS_NX_ODOM_TOPIC=/dimos/odom
 export DIMOS_NX_WORLD_FRAME_ID="${DIMOS_NX_WORLD_FRAME_ID:-odom}"
 export DIMOS_NX_COLOR_IMAGE_TOPIC=/dimos/color_image
-if [[ "${AGENTIC_MODE}" == true ]]; then
-  DIMOS_NX_CMD_VEL_TOPIC="${DIMOS_NX_CMD_VEL_TOPIC:-/dimos/agentic_probe/cmd_vel}"
-  if [[ "${ACTION}" == start ]]; then
-    case "${DIMOS_NX_CMD_VEL_TOPIC}" in
-      cmd_vel|/cmd_vel|dimos/cmd_vel|/dimos/cmd_vel)
-        echo "Refusing physical cmd_vel topic in --agentic mode: ${DIMOS_NX_CMD_VEL_TOPIC}" >&2
-        exit 2
-        ;;
-    esac
-  fi
-  export DIMOS_NX_CMD_VEL_TOPIC
-else
-  export DIMOS_NX_CMD_VEL_TOPIC=/dimos/cmd_vel
-fi
+export DIMOS_NX_CMD_VEL_TOPIC="${DIMOS_NX_CMD_VEL_TOPIC:-/dimos/cmd_vel}"
 export DIMOS_NX_MAP_TOPIC="${DIMOS_NX_MAP_TOPIC:-/dimos/map}"
 export DIMOS_NX_VOXEL_SIZE="${DIMOS_NX_VOXEL_SIZE:-0.1}"
 export DIMOS_NX_COSTMAP_ALGO="${DIMOS_NX_COSTMAP_ALGO:-height_cost}"
