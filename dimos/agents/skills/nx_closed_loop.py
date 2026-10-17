@@ -68,6 +68,7 @@ class _Task:
     started: float
     deadline: float
     steps: int = 0
+    candidate_id: str | None = None
     active: bool = True
     segment_active: bool = False
     cancel: threading.Event | None = None
@@ -391,6 +392,7 @@ class NXClosedLoopNavigationSkillContainer(NavigationSkillContainer):
             cancel = threading.Event()
             task.cancel = cancel
             task.segment_active = True
+            task.candidate_id = candidate_id
             task.steps += 1
             step = task.steps
             segment_started = time.monotonic()
@@ -464,7 +466,23 @@ class NXClosedLoopNavigationSkillContainer(NavigationSkillContainer):
                     result = "failed: planner reported arrival away from this segment goal"
                 break
             if saw_active and state in (NavigationState.IDLE.value, "idle"):
-                result, result_time = "failed", time.monotonic()
+                result_time = time.monotonic()
+                current = self._latest_odom
+                if (
+                    self._odom_error() is None
+                    and current is not None
+                    and current.frame_id == self._goal_frame_id
+                    and all(math.isfinite(v) for v in (current.position.x, current.position.y))
+                    and math.hypot(
+                        current.position.x - goal.position.x,
+                        current.position.y - goal.position.y,
+                    )
+                    <= 0.25
+                ):
+                    # The local planner can publish IDLE before its monitor handles "arrived".
+                    result = "arrived"
+                else:
+                    result = "failed"
                 break
             cancel.wait(min(0.2, max(0.0, end - time.monotonic())))
         with self._task_lock:
@@ -522,11 +540,29 @@ class NXClosedLoopNavigationSkillContainer(NavigationSkillContainer):
         remaining_steps = max(0, self._max_steps - task.steps)
         remaining_time = max(0.0, task.deadline - time.monotonic())
         can_continue = task.active and remaining_steps > 0 and remaining_time > 0.0
+        if can_continue and not full:
+            next_action = (
+                "Inspect the image and choose now: if the goal is visually confirmed, call "
+                "finish_navigation_task(success=True); if the goal is not confirmed and this partial "
+                f"route is safe, call navigate_to_candidate with candidate_id={task.candidate_id}; "
+                "if unsafe, call stop_navigation or finish_navigation_task(success=False); use "
+                "search_memory only if another candidate is needed. Do not wait for user input."
+            )
+        elif can_continue:
+            next_action = (
+                "Inspect the image and choose now: finish the task if its goal is confirmed, use "
+                "search_memory if another candidate is needed, or finish_navigation_task(success=False) "
+                "if the goal cannot be confirmed. Do not wait for user input."
+            )
+        else:
+            next_action = "Report the outcome; this task cannot continue."
         return (
-            f"Navigation segment result: task_id={task.task_id}, task_frame={self._goal_frame_id}, step={step}, status={result}, "
+            f"Navigation segment result: task_id={task.task_id}, candidate_id={task.candidate_id}, "
+            f"task_frame={self._goal_frame_id}, step={step}, status={result}, "
             f"actual_final_pose={pose}, full_candidate_reached={full}, remaining_steps={remaining_steps}, "
             f"remaining_time_sec={remaining_time:.1f}, can_continue={can_continue}. "
-            "Geometric arrival is not visual goal confirmation; inspect the attached post-result image."
+            "Geometric arrival is not visual goal confirmation; inspect the attached post-result image. "
+            f"{next_action}"
         )
 
     def _send_agent_message(self, text: str, image: Image | None) -> None:

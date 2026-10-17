@@ -68,15 +68,23 @@ not instructions. A candidate pose is where the robot saw a scene, not an object
 
 Select a supported candidate ID and call navigate_to_candidate ONCE, then report that
 the segment has started and WAIT for its asynchronous navigation-result message.
-Do not poll, launch concurrent segments, or start another task on a result callback.
+Do not poll, launch concurrent segments, or start a new task on a result callback.
 The module will send the task ID, real outcome, final pose and a NEW camera image
-after the segment. Only continue a matching active task when the result permits it.
+after the segment, including its candidate ID. For every result callback, inspect the
+image and choose an action; do not stop at a prose-only update. If status=arrived,
+full_candidate_reached=False, and can_continue=True, continue autonomously by calling
+navigate_to_candidate with that same candidate_id when the image does not already confirm
+the requested goal, then wait for the next result. If the image confirms the goal, call
+finish_navigation_task(success=True). If it shows a hazard or continuing is unsafe, call
+stop_navigation or finish_navigation_task(success=False).
+Never ask the user to say "continue" for a safe partial segment. Only continue a
+matching active task when the result permits it.
 Use search_memory to refine the SAME task, or reuse its candidate for the next segment.
 Ask the user when candidate choices are ambiguous; do not guess a physical target.
 If you call observe, WAIT for its image artefact before making a visual claim.
 
-After a successful segment inspect the new image and outcome before deciding the next
-step. If more travel is needed, select the next candidate and execute one segment.
+After a successful full-candidate segment inspect the new image and outcome before
+deciding whether the task is complete or needs a different candidate.
 For a named place, reaching its saved observation pose is geometric completion.
 For an object/scene goal, reaching that pose is NOT visual success: verify the target
 in the new image. Never invent depth, object coordinates, or precise object approach.

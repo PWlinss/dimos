@@ -61,6 +61,20 @@ class FakeNavigation:
         return True
 
 
+class ArrivedIdleRaceNavigation(FakeNavigation):
+    def __init__(self) -> None:
+        super().__init__(reached=False)
+        self.state_calls = 0
+
+    def get_state(self) -> NavigationState:
+        self.state_calls += 1
+        return (
+            NavigationState.FOLLOWING_PATH
+            if self.state_calls == 1
+            else NavigationState.IDLE
+        )
+
+
 class FakeAgent:
     def __init__(self) -> None:
         self.messages: list[Any] = []
@@ -181,6 +195,8 @@ def test_two_bounded_segments_report_post_result_images_and_full_candidate() -> 
         assert skill._agent_spec.event.wait(1.0)
         first = skill._agent_spec.messages[-1]
         assert "full_candidate_reached=False" in first.content[0]["text"]
+        assert f"candidate_id={candidate_id}" in first.content[0]["text"]
+        assert "Do not wait for user input" in first.content[0]["text"]
         assert len(first.content) == 2
 
         skill._latest_odom = PoseStamped(
@@ -192,11 +208,13 @@ def test_two_bounded_segments_report_post_result_images_and_full_candidate() -> 
         assert skill._agent_spec.event.wait(1.0)
         second = skill._agent_spec.messages[-1]
         assert "full_candidate_reached=True" in second.content[0]["text"]
+        assert f"candidate_id={candidate_id}" in second.content[0]["text"]
         assert len(nav.goals) == 2
         assert abs(nav.goals[0].position.x - 2.0) < 1e-6
         assert abs(nav.goals[1].position.x - 3.5) < 1e-6
     finally:
         stop_images.set()
+        image_thread.join(timeout=1.0)
 
 
 def test_stale_frame_fails_terminally_and_stop_cancels_task() -> None:
@@ -231,6 +249,32 @@ def test_stale_frame_fails_terminally_and_stop_cancels_task() -> None:
     assert "cancelled the active task" in skill.stop_navigation()
     assert nav.cancel_count == 1
     assert "no active navigation task" in skill.finish_navigation_task()
+
+
+def test_idle_before_arrived_signal_accepts_fresh_odom_at_segment_goal() -> None:
+    nav = ArrivedIdleRaceNavigation()
+    skill = _skill(
+        nav=nav,
+        memory_rows=[
+            {"metadata": {"pos_x": 1, "pos_y": 0, "coordinate_frame": "odom"}, "similarity": 0.9}
+        ],
+    )
+    skill._segment_timeout_sec = 0.5
+    candidate_id = _candidate_id(skill.navigate_with_text("chair"))
+    stop_images = threading.Event()
+    image_thread = threading.Thread(target=_feed_images, args=(skill, stop_images), daemon=True)
+    image_thread.start()
+    try:
+        assert "started" in skill.navigate_to_candidate(candidate_id)
+        assert skill._agent_spec.event.wait(1.0)
+        text = skill._agent_spec.messages[-1].content[0]["text"]
+        assert "status=arrived" in text
+        assert "full_candidate_reached=True" in text
+        assert nav.state_calls >= 2
+        assert nav.cancel_count == 0
+    finally:
+        stop_images.set()
+        image_thread.join(timeout=1.0)
 
 
 def test_budget_stale_odom_and_task_scoped_candidate_ids() -> None:
@@ -290,6 +334,7 @@ def test_replaced_task_cannot_cancel_or_message_for_new_task() -> None:
         assert nav.cancel_count == 1
     finally:
         stop_images.set()
+        image_thread.join(timeout=1.0)
 
 
 def test_step_budget_and_segment_timeout_are_terminal() -> None:
@@ -329,3 +374,4 @@ def test_step_budget_and_segment_timeout_are_terminal() -> None:
         assert nav.cancelled
     finally:
         stop_images.set()
+        image_thread.join(timeout=1.0)

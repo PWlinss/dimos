@@ -66,6 +66,9 @@ def test_closed_loop_exposes_only_task_tools_and_prompt_describes_feedback() -> 
     prompt = next(atom for atom in atoms if atom.module is Agent).kwargs["system_prompt"]
     assert all(name in prompt for name in skills)
     assert "WAIT" in prompt and "NEW camera image" in prompt
+    assert "continue autonomously" in prompt and "same candidate_id" in prompt
+    assert "If the image confirms the goal, call" in prompt
+    assert 'Never ask the user to say "continue"' in prompt
     assert "Never silently restart" in prompt
 
 
