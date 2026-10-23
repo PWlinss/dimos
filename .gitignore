@@ -73,6 +73,9 @@ CLAUDE.MD
 /.mcp.json
 *.speedscope.json
 
+# NX local sensor adapter runtime state and logs
+/.local/nx-local-sensors/
+
 # Coverage
 htmlcov/
 .coverage

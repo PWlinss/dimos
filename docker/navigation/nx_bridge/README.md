@@ -22,6 +22,23 @@ Provided assets:
 - `start_nx_bridge.sh`: idempotently starts/stops the NX data relays and can start
   the control nodes with both movement gates still disabled
 
+## Standalone local sensor nodes
+
+To run only the local sensor adapter and, when its Foxy Python dependencies are
+available, decode `/camera/image_raw/compressed` to `/dimos/color_image`, use
+the separate manager from the repository root:
+
+```bash
+bash ./scripts/nx_local_sensors.sh start
+bash ./scripts/nx_local_sensors.sh status
+bash ./scripts/nx_local_sensors.sh stop
+```
+
+It sources the Foxy, CycloneDDS, and Unitree overlays listed in the script and
+uses `/home/unitree/cyclonedds_ws/cyclonedds.xml`. Its PID files and logs are
+kept under `.local/nx-local-sensors/`. It does not start a DimOS blueprint,
+navigation, planner, or any movement-control node.
+
 Suggested contracts:
 
 - `/registered_scan`: `sensor_msgs/PointCloud2`
