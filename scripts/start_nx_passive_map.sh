@@ -41,5 +41,7 @@ unset PYTHONPATH ROS_DOMAIN_ID
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 export CYCLONEDDS_URI="${DIMOS_NX_DDS_URI:-file:///home/unitree/cyclonedds_ws/cyclonedds.xml}"
 export LD_PRELOAD="${GOMP_LIBRARY}"
+# This passive probe must not request or apply host-wide LCM sysctl/routes.
+export CI=1
 
 exec python -m dimos.robot.unitree.go2.blueprints.unitree_go2_nx_passive_map
