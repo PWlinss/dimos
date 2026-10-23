@@ -15,6 +15,7 @@
 from dataclasses import asdict, dataclass, field
 
 import numpy as np
+from reactivex.disposable import Disposable
 
 from dimos.core.core import rpc
 from dimos.core.global_config import GlobalConfig, global_config
@@ -58,9 +59,9 @@ class CostMapper(Module):
     @rpc
     def start(self) -> None:
         super().start()
-        self._disposables.add(self.global_map.subscribe(self._on_global_map))
-        self._disposables.add(self.lidar.subscribe(self._on_lidar))
-        self._disposables.add(self.odom.subscribe(self._on_odom))
+        self._disposables.add(Disposable(self.global_map.subscribe(self._on_global_map)))
+        self._disposables.add(Disposable(self.lidar.subscribe(self._on_lidar)))
+        self._disposables.add(Disposable(self.odom.subscribe(self._on_odom)))
 
     @rpc
     def stop(self) -> None:
