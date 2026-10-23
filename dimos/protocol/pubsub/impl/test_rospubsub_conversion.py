@@ -1,7 +1,9 @@
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from dimos.msgs.nav_msgs.OccupancyGrid import OccupancyGrid
-from dimos.protocol.pubsub.impl.rospubsub_conversion import ros_to_dimos
+from dimos.protocol.pubsub.impl.rospubsub_conversion import dimos_to_ros, ros_to_dimos
 
 
 class FakeROSMessage:
@@ -83,3 +85,16 @@ def test_occupancy_grid_ros_to_dimos_preserves_grid_data() -> None:
     assert converted.origin.position.y == 2.0
     assert converted.grid.tolist() == [[0, 100, -1], [42, 0, 100]]
     assert abs(converted.ts - 123.456) < 1e-6
+
+
+def test_occupancy_grid_dimos_to_ros_uses_python_numeric_types() -> None:
+    grid = OccupancyGrid(width=2, height=1, frame_id="odom")
+    grid.origin.position.x = np.float32(-1.5)
+    grid.origin.orientation.x = np.float32(0.0)
+
+    converted = dimos_to_ros(grid, FakeOccupancyGrid)
+
+    assert type(converted.info.origin.position.x) is float
+    assert type(converted.info.origin.orientation.x) is float
+    assert type(converted.info.resolution) is float
+    assert type(converted.info.width) is int

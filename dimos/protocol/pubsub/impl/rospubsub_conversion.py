@@ -405,15 +405,15 @@ def _occupancy_grid_dimos_to_ros(msg: DimosMsg, ros_type: type[ROSMessage]) -> R
     ros_msg.header.stamp.sec = sec
     ros_msg.header.stamp.nanosec = int((msg.ts - sec) * 1_000_000_000)
     ros_msg.header.frame_id = msg.frame_id
-    ros_msg.info.resolution = msg.resolution
-    ros_msg.info.width = msg.width
-    ros_msg.info.height = msg.height
-    ros_msg.info.origin.position.x = msg.origin.position.x
-    ros_msg.info.origin.position.y = msg.origin.position.y
-    ros_msg.info.origin.position.z = msg.origin.position.z
-    ros_msg.info.origin.orientation.x = msg.origin.orientation.x
-    ros_msg.info.origin.orientation.y = msg.origin.orientation.y
-    ros_msg.info.origin.orientation.z = msg.origin.orientation.z
-    ros_msg.info.origin.orientation.w = msg.origin.orientation.w
+    ros_msg.info.resolution = float(msg.resolution)
+    ros_msg.info.width = int(msg.width)
+    ros_msg.info.height = int(msg.height)
+    ros_msg.info.origin.position.x = float(msg.origin.position.x)
+    ros_msg.info.origin.position.y = float(msg.origin.position.y)
+    ros_msg.info.origin.position.z = float(msg.origin.position.z)
+    ros_msg.info.origin.orientation.x = float(msg.origin.orientation.x)
+    ros_msg.info.origin.orientation.y = float(msg.origin.orientation.y)
+    ros_msg.info.origin.orientation.z = float(msg.origin.orientation.z)
+    ros_msg.info.origin.orientation.w = float(msg.origin.orientation.w)
     ros_msg.data = msg.grid.astype(np.int8).reshape(-1).tolist()
     return ros_msg
