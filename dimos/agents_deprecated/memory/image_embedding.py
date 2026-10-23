@@ -65,7 +65,6 @@ class ImageEmbeddingProvider:
         """Initialize the specified embedding model."""
         try:
             import onnxruntime as ort  # type: ignore[import-untyped]
-            import torch  # noqa: F401
             from transformers import (  # type: ignore[import-untyped]
                 AutoFeatureExtractor,
                 AutoModel,
@@ -110,7 +109,7 @@ class ImageEmbeddingProvider:
                 raise ValueError(f"Unsupported model: {self.model_name}")
         except ImportError as e:
             logger.error(f"Failed to import required modules: {e}")
-            logger.error("Please install with: pip install transformers torch")
+            logger.error("Please install the required model dependencies")
             # Initialize with dummy model for type checking
             self.model = None
             self.processor = None
@@ -134,40 +133,39 @@ class ImageEmbeddingProvider:
         pil_image = self._prepare_image(image)
 
         try:
-            import torch
-
             if self.model_name == "clip":
                 inputs = self.processor(images=pil_image, return_tensors="np")
 
-                with torch.no_grad():
-                    ort_inputs = {
-                        inp.name: inputs[inp.name]
-                        for inp in self.model.get_inputs()
-                        if inp.name in inputs
-                    }
+                ort_inputs = {
+                    inp.name: inputs[inp.name]
+                    for inp in self.model.get_inputs()
+                    if inp.name in inputs
+                }
 
-                    # If required, add dummy text inputs
-                    input_names = [i.name for i in self.model.get_inputs()]
-                    batch_size = inputs["pixel_values"].shape[0]
-                    if "input_ids" in input_names:
-                        ort_inputs["input_ids"] = np.zeros((batch_size, 1), dtype=np.int64)
-                    if "attention_mask" in input_names:
-                        ort_inputs["attention_mask"] = np.ones((batch_size, 1), dtype=np.int64)
+                # If required, add dummy text inputs
+                input_names = [i.name for i in self.model.get_inputs()]
+                batch_size = inputs["pixel_values"].shape[0]
+                if "input_ids" in input_names:
+                    ort_inputs["input_ids"] = np.zeros((batch_size, 1), dtype=np.int64)
+                if "attention_mask" in input_names:
+                    ort_inputs["attention_mask"] = np.ones((batch_size, 1), dtype=np.int64)
 
-                    # Run inference
-                    ort_outputs = self.model.run(None, ort_inputs)
+                # Run inference
+                ort_outputs = self.model.run(None, ort_inputs)
 
-                    # Look up correct output name
-                    output_names = [o.name for o in self.model.get_outputs()]
-                    if "image_embeds" in output_names:
-                        image_embedding = ort_outputs[output_names.index("image_embeds")]
-                    else:
-                        raise RuntimeError(f"No 'image_embeds' found in outputs: {output_names}")
+                # Look up correct output name
+                output_names = [o.name for o in self.model.get_outputs()]
+                if "image_embeds" in output_names:
+                    image_embedding = ort_outputs[output_names.index("image_embeds")]
+                else:
+                    raise RuntimeError(f"No 'image_embeds' found in outputs: {output_names}")
 
                 embedding = image_embedding / np.linalg.norm(image_embedding, axis=1, keepdims=True)
                 embedding = embedding[0]
 
             elif self.model_name == "resnet":
+                import torch
+
                 inputs = self.processor(images=pil_image, return_tensors="pt")
 
                 with torch.no_grad():
@@ -210,42 +208,39 @@ class ImageEmbeddingProvider:
             return np.random.randn(self.dimensions).astype(np.float32)
 
         try:
-            import torch
-
             inputs = self.processor(text=[text], return_tensors="np", padding=True)
 
-            with torch.no_grad():
-                # Prepare ONNX input dict (handle only what's needed)
-                ort_inputs = {
-                    inp.name: inputs[inp.name]
-                    for inp in self.model.get_inputs()
-                    if inp.name in inputs
-                }
-                # Determine which inputs are expected by the ONNX model
-                input_names = [i.name for i in self.model.get_inputs()]
-                batch_size = inputs["input_ids"].shape[0]  # pulled from text input
+            # Prepare ONNX input dict (handle only what's needed)
+            ort_inputs = {
+                inp.name: inputs[inp.name]
+                for inp in self.model.get_inputs()
+                if inp.name in inputs
+            }
+            # Determine which inputs are expected by the ONNX model
+            input_names = [i.name for i in self.model.get_inputs()]
+            batch_size = inputs["input_ids"].shape[0]  # pulled from text input
 
-                # If the model expects pixel_values (i.e., fused model), add dummy vision input
-                if "pixel_values" in input_names:
-                    ort_inputs["pixel_values"] = np.zeros(
-                        (batch_size, 3, 224, 224), dtype=np.float32
-                    )
-
-                # Run inference
-                ort_outputs = self.model.run(None, ort_inputs)
-
-                # Determine correct output (usually 'last_hidden_state' or 'text_embeds')
-                output_names = [o.name for o in self.model.get_outputs()]
-                if "text_embeds" in output_names:
-                    text_embedding = ort_outputs[output_names.index("text_embeds")]
-                else:
-                    text_embedding = ort_outputs[0]  # fallback to first output
-
-                # Normalize
-                text_embedding = text_embedding / np.linalg.norm(
-                    text_embedding, axis=1, keepdims=True
+            # If the model expects pixel_values (i.e., fused model), add dummy vision input
+            if "pixel_values" in input_names:
+                ort_inputs["pixel_values"] = np.zeros(
+                    (batch_size, 3, 224, 224), dtype=np.float32
                 )
-                text_embedding = text_embedding[0]  # shape: (512,)
+
+            # Run inference
+            ort_outputs = self.model.run(None, ort_inputs)
+
+            # Determine correct output (usually 'last_hidden_state' or 'text_embeds')
+            output_names = [o.name for o in self.model.get_outputs()]
+            if "text_embeds" in output_names:
+                text_embedding = ort_outputs[output_names.index("text_embeds")]
+            else:
+                text_embedding = ort_outputs[0]  # fallback to first output
+
+            # Normalize
+            text_embedding = text_embedding / np.linalg.norm(
+                text_embedding, axis=1, keepdims=True
+            )
+            text_embedding = text_embedding[0]  # shape: (512,)
 
             logger.debug(
                 f"Generated text embedding with shape {text_embedding.shape} for text: '{text}'"
