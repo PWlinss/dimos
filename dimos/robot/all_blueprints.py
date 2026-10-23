@@ -87,6 +87,7 @@ all_blueprints = {
     "unitree-go2-nx-bridge": "dimos.robot.unitree.go2.blueprints.navigation.unitree_go2_nx_bridge:unitree_go2_nx_bridge",
     "unitree-go2-nx-closed-loop": "dimos.robot.unitree.go2.blueprints.agentic.unitree_go2_nx_closed_loop:unitree_go2_nx_closed_loop",
     "unitree-go2-nx-map-bridge": "dimos.robot.unitree.go2.blueprints.navigation.unitree_go2_nx_bridge:unitree_go2_nx_map_bridge",
+    "unitree-go2-nx-passive-map": "dimos.robot.unitree.go2.blueprints.unitree_go2_nx_passive_map:unitree_go2_nx_passive_map",
     "unitree-go2-ros": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2_ros:unitree_go2_ros",
     "unitree-go2-spatial": "dimos.robot.unitree.go2.blueprints.smart.unitree_go2_spatial:unitree_go2_spatial",
     "unitree-go2-temporal-memory": "dimos.robot.unitree.go2.blueprints.agentic.unitree_go2_temporal_memory:unitree_go2_temporal_memory",
