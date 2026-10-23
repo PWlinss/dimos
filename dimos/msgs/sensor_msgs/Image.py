@@ -26,7 +26,6 @@ from dimos_lcm.std_msgs.Header import Header
 import numpy as np
 import reactivex as rx
 from reactivex import operators as ops
-import rerun as rr
 from turbojpeg import TurboJPEG  # type: ignore[import-untyped]
 
 from dimos.types.timestamped import Timestamped, TimestampedBufferCollection, to_human_readable
@@ -52,6 +51,8 @@ class ImageFormat(Enum):
 
 def _format_to_rerun(data: np.ndarray, fmt: ImageFormat) -> Any:  # type: ignore[type-arg]
     """Convert image data to Rerun archetype based on format."""
+    import rerun as rr
+
     match fmt:
         case ImageFormat.RGB:
             return rr.Image(data, color_model="RGB")
